@@ -1,0 +1,85 @@
+---
+title: "5. How much of the valley is close to the river?"
+---
+
+```{r}
+library(terra)
+
+rem <- rast("data/processed/rem_2020_1m.tif")
+bands <- classify(rem, rcl = c(-Inf, 0, 1, 2, 3, Inf))
+
+f <- freq(bands)
+f$area_km2 <- round(f$count / 1e6, 2)
+f$pct <- round(100 * f$count / sum(f$count), 1)
+f$cumulative_km2 <- cumsum(f$area_km2)
+f
+```
+```{r}
+plot(bands, col = c("#08306b", "#fdae61", "#fee08b", "#d9ef8b", "grey85"),
+     main = "Height above the river, 2020")
+```
+```{r}
+dtm <- rast("data/processed/dtm_2020_1m.tif")
+
+x <- seq(367800, 370300, by = 5)
+ground <- extract(dtm, cbind(x, 196800))[[1]]
+water  <- ground - extract(rem, cbind(x, 196800))[[1]]
+
+plot(x, ground, type = "l", ylim = range(c(ground, water), na.rm = TRUE),
+     xlab = "Easting (m)", ylab = "Elevation (m, NAVD88)",
+     main = "Cross-section at 196,800 N (west to east)")
+lines(x, water, col = "steelblue", lty = 2, lwd = 2)
+legend("topleft", c("ground (DTM)", "estimated water surface"),
+       col = c("black", "steelblue"), lty = c(1, 2), bty = "n")
+```
+```{r}
+library(sf)
+
+cl <- st_read("data/reach/centerlines.geojson", quiet = TRUE) |> st_transform(2856)
+corridor <- st_read("data/reach/corridor.geojson", quiet = TRUE) |> st_transform(2856)
+
+ends <- st_buffer(cl, 2000, endCapStyle = "FLAT") |> st_union()
+analysis_area <- st_intersection(st_geometry(corridor), ends)
+analysis_area <- st_cast(analysis_area, "POLYGON")
+analysis_area <- analysis_area[which.max(st_area(analysis_area))]
+
+st_write(st_sf(name = "analysis area", geometry = analysis_area) |> st_transform(4326),
+         "data/reach/analysis_area.geojson", delete_dsn = TRUE, quiet = TRUE)
+
+rem <- mask(rem, vect(analysis_area))
+bands <- classify(rem, rcl = c(-Inf, 0, 1, 2, 3, Inf))
+
+f <- freq(bands)
+f$area_km2 <- round(f$count / 1e6, 2)
+f$pct <- round(100 * f$count / sum(f$count), 1)
+f$cumulative_km2 <- cumsum(f$area_km2)
+f
+```
+```{r}
+library(tmap)
+
+area <- vect("data/reach/analysis_area.geojson") |> project("EPSG:2856")
+dtm <- rast("data/processed/dtm_2020_1m.tif") |> mask(area)
+
+dtm3 <- aggregate(dtm, 3)
+rem3 <- aggregate(rem, 3) |> clamp(lower = 0, upper = 8, values = TRUE)
+hs <- shade(terrain(dtm3, "slope", unit = "radians"),
+            terrain(dtm3, "aspect", unit = "radians"),
+            angle = 45, direction = 315)
+
+m <- tm_shape(hs) +
+  tm_raster(col.scale = tm_scale_continuous(values = "-brewer.greys"),
+            col.legend = tm_legend_hide()) +
+  tm_shape(rem3) +
+  tm_raster(col.scale = tm_scale_continuous(values = "brewer.yl_gn_bu", limits = c(0, 8)),
+            col_alpha = 0.7,
+            col.legend = tm_legend(title = "Height above river (m)")) +
+  tm_shape(cl) + tm_lines(col = "white", lwd = 1) +
+  tm_scalebar(position = c("left", "bottom")) +
+  tm_compass(position = c("right", "top")) +
+  tm_title("Puyallup and Carbon Rivers near Orting, WA")
+
+dir.create("figures", showWarnings = FALSE)
+tmap_save(m, "figures/rem_map.png", width = 7, height = 9, dpi = 200)
+m
+```

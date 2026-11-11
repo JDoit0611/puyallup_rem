@@ -1,0 +1,116 @@
+---
+title: "4. Relative elevation model"
+jupyter: python3
+---
+
+```{python}
+import os
+env = r"C:\Users\Jordan\miniforge3\envs\puyallup-rem\Library\share"
+os.environ["GDAL_DATA"] = os.path.join(env, "gdal")
+os.environ["PROJ_DATA"] = os.path.join(env, "proj")
+```
+
+```{python}
+import numpy as np
+import pandas as pd
+import geopandas as gpd
+import rasterio
+from rasterio.windows import Window
+
+lines = gpd.read_file("data/reach/centerlines.geojson").to_crs(2856)
+
+def sample_low(src, x, y, half=10):
+    row, col = src.index(x, y)
+    win = Window(col - half, row - half, 2 * half + 1, 2 * half + 1)
+    vals = src.read(1, window=win, boundless=True, fill_value=np.nan)
+    if np.all(np.isnan(vals)):
+        return np.nan
+    return np.nanpercentile(vals, 5)
+
+rows = []
+with rasterio.open("data/processed/dtm_2020_1m.tif") as src:
+    for name, line in zip(lines.gnis_name, lines.geometry):
+        for d in np.arange(0, line.length, 25):
+            p = line.interpolate(d)
+            rows.append({"river": name, "dist_m": d, "x": p.x, "y": p.y,
+                         "z": sample_low(src, p.x, p.y)})
+
+pts = pd.DataFrame(rows)
+pts.groupby("river").z.describe()
+```
+```{python}
+import matplotlib.pyplot as plt
+
+profiles = []
+for name, g in pts.dropna().groupby("river"):
+    g = g.sort_values("dist_m")
+    if g.z.iloc[0] < g.z.iloc[-1]:
+        g = g.iloc[::-1]
+    g = g.copy()
+    g["down_km"] = np.arange(len(g)) * 25 / 1000
+    g["z_ws"] = np.minimum.accumulate(g.z.values)
+    profiles.append(g)
+prof = pd.concat(profiles)
+
+fig, axes = plt.subplots(1, 2, figsize=(11, 4))
+for ax, (name, g) in zip(axes, prof.groupby("river")):
+    ax.plot(g.down_km, g.z, ".", ms=3, color="grey", label="DTM low point")
+    ax.plot(g.down_km, g.z_ws, color="tab:blue", label="water surface")
+    ax.set_title(name)
+    ax.set_xlabel("km downstream")
+    ax.set_ylabel("elevation (m, NAVD88)")
+    ax.legend()
+plt.tight_layout()
+```
+```{python}
+from rasterio.transform import Affine
+from rasterio.warp import reproject, Resampling
+from scipy.spatial import cKDTree
+
+tree = cKDTree(prof[["x", "y"]].values)
+z_river = prof["z_ws"].values
+
+with rasterio.open("data/processed/dtm_2020_1m.tif") as src:
+    dtm = src.read(1)
+    meta = src.profile
+    t = src.transform
+
+# water surface on a coarse 10 m grid
+step = 10
+ch, cw = int(np.ceil(dtm.shape[0] / step)), int(np.ceil(dtm.shape[1] / step))
+coarse_t = t * Affine.scale(step)
+cx = coarse_t.c + (np.arange(cw) + 0.5) * step
+cy = coarse_t.f - (np.arange(ch) + 0.5) * step
+X, Y = np.meshgrid(cx, cy)
+
+dist, idx = tree.query(np.column_stack([X.ravel(), Y.ravel()]), k=48)
+w = 1 / np.maximum(dist, 1) ** 2
+ws_coarse = (np.sum(w * z_river[idx], axis=1) / np.sum(w, axis=1)).reshape(ch, cw)
+from scipy.ndimage import gaussian_filter
+ws_coarse = gaussian_filter(ws_coarse, sigma=15)
+
+# back to 1 m, then subtract
+ws = np.empty_like(dtm)
+reproject(ws_coarse.astype("float32"), ws,
+          src_transform=coarse_t, dst_transform=t,
+          src_crs=meta["crs"], dst_crs=meta["crs"],
+          resampling=Resampling.bilinear)
+rem = dtm - ws
+
+meta.update(dtype="float32", compress="deflate")
+with rasterio.open("data/processed/rem_2020_1m.tif", "w", **meta) as dst:
+    dst.write(rem.astype("float32"), 1)
+
+np.nanpercentile(rem, [1, 25, 50, 75, 99]).round(2)
+```
+```{python}
+from rasterio.transform import array_bounds
+
+south_west_east_north = array_bounds(dtm.shape[0], dtm.shape[1], t)
+west, south, east, north = south_west_east_north
+fig, ax = plt.subplots(figsize=(7, 9))
+im = ax.imshow(rem[::4, ::4], cmap="YlGnBu", vmin=0, vmax=8,
+               extent=(west, east, south, north))
+plt.colorbar(im, ax=ax, label="height above river (m)", shrink=0.6)
+ax.set_title("Relative elevation model, 2020")
+```

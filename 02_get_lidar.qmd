@@ -1,0 +1,97 @@
+---
+title: "2. Get the 2020 LiDAR"
+jupyter: python3
+---
+
+```{python}
+import os
+env = r"C:\Users\Jordan\miniforge3\envs\puyallup-rem\Library\share"
+os.environ["GDAL_DATA"] = os.path.join(env, "gdal")
+os.environ["PROJ_DATA"] = os.path.join(env, "proj")
+```
+
+```{python}
+import json
+import geopandas as gpd
+import pdal
+from shapely.geometry import box, Point
+
+orting = gpd.GeoSeries([Point(-122.2043, 47.0979)], crs=4326).to_crs(2856).iloc[0]
+x0 = orting.x // 1000 * 1000
+y0 = orting.y // 1000 * 1000
+test_cell = box(x0, y0, x0 + 1000, y0 + 1000)
+test_cell_ept = gpd.GeoSeries([test_cell], crs=2856).to_crs(3857).iloc[0]
+print(test_cell.bounds)
+```
+```{python}
+ept = "https://s3-us-west-2.amazonaws.com/usgs-lidar-public/WA_PierceCounty_1_2020/ept.json"
+os.makedirs("data/raw/lidar2020_test", exist_ok=True)
+
+pipeline = [
+    {"type": "readers.ept", "filename": ept, "polygon": test_cell_ept.wkt, "resolution": 0.5},
+    {"type": "filters.range", "limits": "Classification[2:2],Classification[9:9]"},
+    {"type": "filters.reprojection", "in_srs": "EPSG:3857", "out_srs": "EPSG:2856"},
+    {"type": "writers.las", "filename": "data/raw/lidar2020_test/orting_test.laz",
+     "a_srs": "EPSG:2856+5703", "minor_version": 4, "dataformat_id": 6},
+]
+
+p = pdal.Pipeline(json.dumps(pipeline))
+n = p.execute()
+print(f"{n:,} points written")
+```
+```{python}
+import numpy as np
+
+corridor = gpd.read_file("data/reach/corridor.geojson").to_crs(2856)
+shape = corridor.geometry.iloc[0]
+xmin, ymin, xmax, ymax = shape.bounds
+
+cells = []
+for x in np.arange(xmin // 1000 * 1000, xmax, 1000):
+    for y in np.arange(ymin // 1000 * 1000, ymax, 1000):
+        piece = box(x, y, x + 1000, y + 1000).intersection(shape)
+        if not piece.is_empty:
+            cells.append({"name": f"cell_{int(x)}_{int(y)}", "geometry": piece})
+
+cells = gpd.GeoDataFrame(cells, crs=2856)
+print(len(cells), "cells")
+
+ax = corridor.plot(color="lightsteelblue", figsize=(5, 7))
+cells.boundary.plot(ax=ax, color="k", linewidth=0.5)
+```
+```{python}
+import time
+from pathlib import Path
+
+out_dir = Path("data/raw/lidar2020")
+partial = out_dir / "_partial"
+partial.mkdir(parents=True, exist_ok=True)
+
+def download_cell(name, geom):
+    out_file = out_dir / f"{name}.laz"
+    if out_file.exists():
+        return "already done"
+
+    tmp = partial / f"{name}.laz"
+    geom_ept = gpd.GeoSeries([geom], crs=2856).to_crs(3857).iloc[0]
+    pipeline = [
+        {"type": "readers.ept", "filename": ept, "polygon": geom_ept.wkt, "resolution": 0.5},
+        {"type": "filters.range", "limits": "Classification[2:2],Classification[9:9]"},
+        {"type": "filters.reprojection", "in_srs": "EPSG:3857", "out_srs": "EPSG:2856"},
+        {"type": "writers.las", "filename": str(tmp),
+         "a_srs": "EPSG:2856+5703", "minor_version": 4, "dataformat_id": 6},
+    ]
+    n = pdal.Pipeline(json.dumps(pipeline)).execute()
+
+    if n == 0:
+        tmp.unlink(missing_ok=True)
+        return "no ground points"
+    tmp.replace(out_file)
+    return f"{n:,} points"
+
+start = time.time()
+for i, row in enumerate(cells.itertuples(), start=1):
+    result = download_cell(row.name, row.geometry)
+    minutes = (time.time() - start) / 60
+    print(f"[{i}/{len(cells)}] {row.name}: {result}  ({minutes:.1f} min)")
+```

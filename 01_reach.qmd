@@ -1,0 +1,76 @@
+---
+title: "1. Study reach"
+jupyter: python3
+---
+```{python}
+import os
+env = r"C:\Users\Jordan\miniforge3\envs\puyallup-rem\Library\share"
+os.environ["GDAL_DATA"] = os.path.join(env, "gdal")
+os.environ["PROJ_DATA"] = os.path.join(env, "proj")
+```
+River lines come from the USGS National Hydrography Dataset (NHD).
+
+```{python}
+import requests
+import geopandas as gpd
+
+url = "https://hydro.nationalmap.gov/arcgis/rest/services/nhd/MapServer/6/query"
+params = {
+    "where": "GNIS_NAME IN ('Puyallup River','Carbon River')",
+    "geometry": "-122.30,46.98,-122.10,47.20",
+    "geometryType": "esriGeometryEnvelope",
+    "inSR": 4326,
+    "outFields": "GNIS_NAME",
+    "outSR": 4326,
+    "f": "geojson",
+}
+r = requests.get(url, params=params, timeout=60)
+rivers = gpd.GeoDataFrame.from_features(r.json()["features"], crs=4326)
+rivers.head()
+```
+```{python}
+rivers.explore(column="gnis_name", tiles="Esri.WorldImagery")
+```
+```{python}
+from shapely.ops import linemerge
+
+rivers = rivers.explode(index_parts=False)
+
+def in_reach(row):
+    xs, ys = row.geometry.xy
+    if row.gnis_name == "Puyallup River":
+        return min(ys) >= 47.055 and max(ys) <= 47.1315
+    else:
+        return min(xs) >= -122.2335 and max(xs) <= -122.17
+
+reach = rivers[rivers.apply(in_reach, axis=1)]
+centerlines = reach.dissolve(by="gnis_name").reset_index()
+centerlines["geometry"] = centerlines.geometry.apply(linemerge)
+centerlines
+```
+```{python}
+from shapely.geometry import Polygon
+
+lines_m = centerlines.to_crs(2856)
+print((lines_m.length / 1000).round(1))
+
+buffers = {"Puyallup River": 1000, "Carbon River": 600}
+pieces = [geom.buffer(buffers[name]) for name, geom in zip(lines_m.gnis_name, lines_m.geometry)]
+
+shape = pieces[0].union(pieces[1])
+shape = shape.buffer(300).buffer(-300)
+shape = Polygon(shape.exterior)
+
+corridor = gpd.GeoDataFrame({"name": ["study corridor"]}, geometry=[shape], crs=2856)
+print(f"Corridor area: {corridor.area.iloc[0] / 1e6:.1f} km²")
+```
+```{python}
+centerlines.to_file("data/reach/centerlines.geojson", driver="GeoJSON")
+corridor.to_crs(4326).to_file("data/reach/corridor.geojson", driver="GeoJSON")
+```
+
+```{python}
+m = corridor.explore(color="steelblue", style_kwds={"fillOpacity": 0.15}, tiles="Esri.WorldImagery")
+centerlines.explore(m=m, column="gnis_name")
+m.save("reach_map.html")
+```

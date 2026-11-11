@@ -1,0 +1,44 @@
+---
+title: "3. Bare-earth DTM"
+---
+
+```{r}
+library(lidR)
+library(terra)
+
+las <- readLAS("data/raw/lidar2020_test/orting_test.laz")
+las
+```
+```{r}
+dtm <- rasterize_terrain(las, res = 1, algorithm = tin())
+
+slp <- terrain(dtm, "slope", unit = "radians")
+asp <- terrain(dtm, "aspect", unit = "radians")
+hs <- shade(slp, asp, angle = 45, direction = 315)
+
+plot(hs, col = grey(0:100 / 100), legend = FALSE)
+```
+```{r}
+ctg <- readLAScatalog("data/raw/lidar2020")
+ctg
+plot(ctg)
+```
+```{r}
+opt_chunk_buffer(ctg) <- 20
+dtm <- rasterize_terrain(ctg, res = 1, algorithm = tin())
+
+corridor <- vect("data/reach/corridor.geojson") |> project(dtm)
+dtm <- mask(crop(dtm, corridor), corridor)
+
+dir.create("data/processed", showWarnings = FALSE)
+writeRaster(dtm, "data/processed/dtm_2020_1m.tif", overwrite = TRUE)
+dtm
+```
+```{r}
+hs <- shade(terrain(dtm, "slope", unit = "radians"),
+            terrain(dtm, "aspect", unit = "radians"),
+            angle = 45, direction = 315)
+
+plot(hs, col = grey(0:100 / 100), legend = FALSE)
+plot(dtm, col = hcl.colors(50, "Earth"), alpha = 0.5, add = TRUE)
+```

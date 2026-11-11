@@ -1,0 +1,164 @@
+---
+title: "6. Channel change, 2011–2020"
+---
+
+```{r}
+library(terra)
+
+files <- list.files("data/raw/dtm2011", pattern = "\\.tif$", full.names = TRUE)
+files
+
+dtm11 <- vrt(files)
+dtm11
+```
+
+```{r}
+crs(dtm11, describe = TRUE)
+linearUnits(dtm11)
+```
+```{r}
+dtm20 <- rast("data/processed/dtm_2020_1m.tif")
+area <- vect("data/reach/analysis_area.geojson")
+
+dtm11_crop <- crop(dtm11, ext(project(area, crs(dtm11))) + 100)
+dtm11_m <- project(dtm11_crop, dtm20, method = "bilinear") * 0.3048006
+dtm11_m <- mask(dtm11_m, project(area, crs(dtm20)))
+
+writeRaster(dtm11_m, "data/processed/dtm_2011_1m.tif", overwrite = TRUE)
+dtm11_m
+```
+```{r}
+dtm20 <- mask(dtm20, project(area, crs(dtm20)))
+dod <- dtm20 - dtm11_m
+names(dod) <- "change_m"
+writeRaster(dod, "data/processed/dod_2011_2020.tif", overwrite = TRUE)
+
+s <- spatSample(dod, 1e6, method = "regular", na.rm = TRUE)
+quantile(s$change_m, c(0.01, 0.05, 0.25, 0.5, 0.75, 0.95, 0.99))
+```
+
+```{r}
+plot(clamp(dod, -3, 3), col = hcl.colors(50, "RdBu"),
+     main = "Elevation change, 2011 to 2020 (m)")
+```
+```{r}
+usgs <- rast("data/raw/usgs_dem2020/USGS_1M_10_x56y522_WA_PierceCounty_2020_A20.tif")
+usgs_m <- project(usgs, dtm20, method = "bilinear")
+
+check <- dtm20 - usgs_m
+s2 <- spatSample(check, 1e6, method = "regular", na.rm = TRUE)
+quantile(s2[[1]], c(0.05, 0.25, 0.5, 0.75, 0.95))
+
+plot(clamp(check, -1, 1), col = hcl.colors(50, "RdBu"),
+     main = "Our 2020 DTM minus USGS 2020 DEM (m)")
+```
+```{r}
+options(timeout = 3600)
+
+tiles <- c("x55y521", "x55y522", "x55y523", "x56y521", "x56y523")
+base <- "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1m/Projects/WA_PierceCounty_2020_A20/TIFF/"
+
+for (t in tiles) {
+  f <- paste0("USGS_1M_10_", t, "_WA_PierceCounty_2020_A20.tif")
+  dest <- file.path("data/raw/usgs_dem2020", f)
+  if (!file.exists(dest)) {
+    message("Downloading ", f)
+    download.file(paste0(base, f), dest, mode = "wb")
+  }
+}
+list.files("data/raw/usgs_dem2020")
+```
+```{r}
+usgs_files <- list.files("data/raw/usgs_dem2020", pattern = "\\.tif$", full.names = TRUE)
+dem20 <- vrt(usgs_files) |>
+  project(dtm20, method = "bilinear") |>
+  mask(project(area, crs(dtm20)))
+writeRaster(dem20, "data/processed/dem_2020_usgs_1m.tif", overwrite = TRUE)
+
+dod <- dem20 - dtm11_m
+names(dod) <- "change_m"
+
+# stable ground: flat (< 5 degrees) and more than 150 m from either river
+cl_v <- vect("data/reach/centerlines.geojson") |> project(crs(dtm20))
+near_river <- rasterize(buffer(cl_v, 150), dod)
+slope <- terrain(dem20, "slope")
+stable <- is.na(near_river) & slope < 5
+
+s <- spatSample(mask(dod, stable, maskvalues = FALSE), 1e6, method = "regular", na.rm = TRUE)
+bias <- median(s$change_m)
+bias
+
+dod <- dod - bias
+writeRaster(dod, "data/processed/dod_2011_2020.tif", overwrite = TRUE)
+
+s_all <- spatSample(dod, 1e6, method = "regular", na.rm = TRUE)
+quantile(s_all$change_m, c(0.01, 0.05, 0.25, 0.5, 0.75, 0.95, 0.99))
+```
+
+```{r}
+plot(clamp(dod, -3, 3), col = hcl.colors(50, "RdBu"),
+     main = "Elevation change, 2011 to 2020 (m), bias corrected")
+```
+```{r}
+lod <- quantile(abs(s$change_m - bias), 0.95)
+lod
+
+dz <- mask(dod, near_river)
+dz <- ifel(abs(dz) < lod, NA, dz)
+
+erosion_m3    <- global(ifel(dz < 0, dz, NA), "sum", na.rm = TRUE)[[1]]
+deposition_m3 <- global(ifel(dz > 0, dz, NA), "sum", na.rm = TRUE)[[1]]
+
+data.frame(
+  erosion_m3 = round(erosion_m3),
+  deposition_m3 = round(deposition_m3),
+  net_m3 = round(erosion_m3 + deposition_m3)
+)
+```
+```{r}
+ctg_w <- readLAScatalog("data/raw/lidar2020", filter = "-keep_class 9")
+n_water <- pixel_metrics(ctg_w, ~length(Z), res = 2)
+wet <- resample(n_water > 0, dod, method = "near")
+wet <- ifel(is.na(wet), FALSE, wet)
+
+vol <- function(r) c(
+  erosion_m3    = round(global(ifel(r < 0, r, NA), "sum", na.rm = TRUE)[[1]]),
+  deposition_m3 = round(global(ifel(r > 0, r, NA), "sum", na.rm = TRUE)[[1]])
+)
+
+rbind(
+  dry_ground  = vol(mask(dz, wet, maskvalues = TRUE)),
+  wetted_2020 = vol(mask(dz, wet, maskvalues = FALSE))
+)
+```
+```{r}
+library(tmap)
+library(sf)
+
+dem3 <- aggregate(dem20, 3)
+hs20 <- shade(terrain(dem3, "slope", unit = "radians"),
+              terrain(dem3, "aspect", unit = "radians"),
+              angle = 45, direction = 315)
+
+slope20 <- terrain(dem20, "slope")
+dod_sig <- ifel(abs(dod) < lod | (slope20 > 15 & abs(dod) < 1), NA, dod)
+dod3 <- aggregate(dod_sig, 3, fun = "mean", na.rm = TRUE) |>
+  clamp(lower = -2, upper = 2, values = TRUE)
+
+cl <- st_read("data/reach/centerlines.geojson", quiet = TRUE) |> st_transform(2856)
+
+m2 <- tm_shape(hs20) +
+  tm_raster(col.scale = tm_scale_continuous(values = "-brewer.greys"),
+            col.legend = tm_legend_hide()) +
+  tm_shape(dod3) +
+  tm_raster(col.scale = tm_scale_continuous(values = "brewer.rd_bu",
+                                            limits = c(-2, 2), midpoint = 0),
+            col.legend = tm_legend(title = "Elevation change (m)\nred = erosion\nblue = deposition")) +
+  tm_shape(cl) + tm_lines(col = "grey30", lwd = 0.5, lty = "dashed") +
+  tm_scalebar(position = c("left", "bottom")) +
+  tm_compass(position = c("right", "top")) +
+  tm_title("Elevation change, 2011 to 2020")
+
+tmap_save(m2, "figures/change_map.png", width = 7, height = 9, dpi = 200)
+m2
+```

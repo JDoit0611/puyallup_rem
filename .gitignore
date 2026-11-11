@@ -1,0 +1,16 @@
+# Big data stays off GitHub (it's re-downloadable; see README)
+data/raw/
+data/processed/
+*.laz
+*.las
+*.tif
+*.vrt
+
+# Quarto, Python and R clutter
+/.quarto/
+__pycache__/
+.ipynb_checkpoints/
+.Rhistory
+.RData
+.Rproj.user/
+Thumbs.db
