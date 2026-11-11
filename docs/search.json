@@ -1,0 +1,37 @@
+[
+  {
+    "objectID": "index.html",
+    "href": "index.html",
+    "title": "Floodplain Height and Channel Erosion of the Puyallup River",
+    "section": "",
+    "text": "Orting sits between two rivers carrying heavy sediment loads from Mount Rainier. This project uses LiDAR to map how high the valley floor sits above those rivers, and where the channels have changed between 2011 and 2020."
+  },
+  {
+    "objectID": "index.html#how-close-is-the-floodplain-to-the-river",
+    "href": "index.html#how-close-is-the-floodplain-to-the-river",
+    "title": "Floodplain Height and Channel Erosion of the Puyallup River",
+    "section": "How close is the floodplain to the river?",
+    "text": "How close is the floodplain to the river?\n\n\n\n\n\n\nRelative elevation model: ground height above the nearby river, 2020\n\n\n\n\n \n\n\n\nAbout 13 km², nearly half the study area, sits within 3 m of the river.\nAbout 5.6 km² sits within 1 m of the river or lower.\nThe land southwest of Orting sits below the nearby Puyallup. A cross-section shows the ground falling about 4 m away from the leveed channel toward the western bluff."
+  },
+  {
+    "objectID": "index.html#where-did-the-rivers-change",
+    "href": "index.html#where-did-the-rivers-change",
+    "title": "Floodplain Height and Channel Erosion of the Puyallup River",
+    "section": "Where did the rivers change?",
+    "text": "Where did the rivers change?\n\n\n\n\n\n\nElevation change, 2011 to 2020. Red is erosion, blue is deposition.\n\n\n\n\n \n\n\n\nBlue = Deposition: places that got higher, like new gravel bars on the inside of bends or sediment settling in the channel.\nRed = Erosion: places that got lower, like banks cut back on the outside of bends.\n\n\n\n\n\nAbout 1.1 million m³ of sediment was reworked on dry ground: 625,000 m³ of bank erosion (ground lowered) and 517,000 m³ of deposition (ground built up by new gravel bars).\nOverall net change was small (about −107,000 m³), so the rivers mostly moved material around rather than gaining or losing it.\nThe Carbon below Orting had the most active bank erosion."
+  },
+  {
+    "objectID": "index.html#data-and-methods",
+    "href": "index.html#data-and-methods",
+    "title": "Floodplain Height and Channel Erosion of the Puyallup River",
+    "section": "Data and methods",
+    "text": "Data and methods\n\n2020: Pierce County LiDAR (USGS 3DEP), streamed with PDAL, ground modeled with lidR, plus the USGS 1 m DEM for change detection.\n2011: Pierce County DTM from the WA DNR Lidar Portal.\nREM: river water levels sampled every 25 m, interpolated across the valley (IDW), and subtracted from the DTM.\nChange: a 0.19 m vertical offset between surveys was measured on stable ground and removed. Change smaller than 0.23 m (the level of detection) was ignored."
+  },
+  {
+    "objectID": "index.html#limitations",
+    "href": "index.html#limitations",
+    "title": "Floodplain Height and Channel Erosion of the Puyallup River",
+    "section": "Limitations",
+    "text": "Limitations\n\nLiDAR cannot see through water, so change in the wetted channel reflects water level as well as the bed which has been left out of the volume totals.\nREM heights are relative to an interpolated water surface, so they’re approximate, especially far from the channel."
+  }
+]

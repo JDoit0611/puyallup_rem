@@ -14,3 +14,4 @@ __pycache__/
 .RData
 .Rproj.user/
 Thumbs.db
+**/*.quarto_ipynb

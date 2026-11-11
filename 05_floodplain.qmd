@@ -56,30 +56,38 @@ f$cumulative_km2 <- cumsum(f$area_km2)
 f
 ```
 ```{r}
+library(terra)
+library(sf)
 library(tmap)
 
+# load saved data
 area <- vect("data/reach/analysis_area.geojson") |> project("EPSG:2856")
-dtm <- rast("data/processed/dtm_2020_1m.tif") |> mask(area)
+cl   <- st_read("data/reach/centerlines.geojson", quiet = TRUE) |> st_transform(2856)
+dtm  <- rast("data/processed/dtm_2020_1m.tif") |> mask(area)
+rem  <- rast("data/processed/rem_2020_1m.tif") |> mask(area)
 
+# 3 m versions for display, plus hillshade
 dtm3 <- aggregate(dtm, 3)
 rem3 <- aggregate(rem, 3) |> clamp(lower = 0, upper = 8, values = TRUE)
 hs <- shade(terrain(dtm3, "slope", unit = "radians"),
             terrain(dtm3, "aspect", unit = "radians"),
             angle = 45, direction = 315)
 
+# map
 m <- tm_shape(hs) +
   tm_raster(col.scale = tm_scale_continuous(values = "-brewer.greys"),
             col.legend = tm_legend_hide()) +
   tm_shape(rem3) +
   tm_raster(col.scale = tm_scale_continuous(values = "brewer.yl_gn_bu", limits = c(0, 8)),
             col_alpha = 0.7,
-            col.legend = tm_legend(title = "Height above river (m)")) +
+            col.legend = tm_legend(title = "Height above\nriver (m)",
+                                   position = tm_pos_in("right", "bottom"),
+                                   bg.color = "white", bg.alpha = 0.8)) +
   tm_shape(cl) + tm_lines(col = "white", lwd = 1) +
   tm_scalebar(position = c("left", "bottom")) +
   tm_compass(position = c("right", "top")) +
   tm_title("Puyallup and Carbon Rivers near Orting, WA")
 
-dir.create("figures", showWarnings = FALSE)
-tmap_save(m, "figures/rem_map.png", width = 7, height = 9, dpi = 200)
+tmap_save(m, "figures/rem_map.png", width = 8, dpi = 200)
 m
 ```

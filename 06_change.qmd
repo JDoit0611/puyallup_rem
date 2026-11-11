@@ -132,33 +132,43 @@ rbind(
 )
 ```
 ```{r}
-library(tmap)
+library(terra)
 library(sf)
+library(tmap)
 
+# load saved data
+cl    <- st_read("data/reach/centerlines.geojson", quiet = TRUE) |> st_transform(2856)
+dem20 <- rast("data/processed/dem_2020_usgs_1m.tif")
+dod   <- rast("data/processed/dod_2011_2020.tif")   # bias-corrected change
+lod   <- 0.234                                       # level of detection (Step 28)
+
+# hide change below the LoD, and small change on steep slopes
+slope20 <- terrain(dem20, "slope")
+dod_sig <- ifel(abs(dod) < lod | (slope20 > 15 & abs(dod) < 1), NA, dod)
+
+# 3 m versions for display, plus hillshade
 dem3 <- aggregate(dem20, 3)
 hs20 <- shade(terrain(dem3, "slope", unit = "radians"),
               terrain(dem3, "aspect", unit = "radians"),
               angle = 45, direction = 315)
-
-slope20 <- terrain(dem20, "slope")
-dod_sig <- ifel(abs(dod) < lod | (slope20 > 15 & abs(dod) < 1), NA, dod)
 dod3 <- aggregate(dod_sig, 3, fun = "mean", na.rm = TRUE) |>
   clamp(lower = -2, upper = 2, values = TRUE)
 
-cl <- st_read("data/reach/centerlines.geojson", quiet = TRUE) |> st_transform(2856)
-
+# map
 m2 <- tm_shape(hs20) +
   tm_raster(col.scale = tm_scale_continuous(values = "-brewer.greys"),
             col.legend = tm_legend_hide()) +
   tm_shape(dod3) +
   tm_raster(col.scale = tm_scale_continuous(values = "brewer.rd_bu",
                                             limits = c(-2, 2), midpoint = 0),
-            col.legend = tm_legend(title = "Elevation change (m)\nred = erosion\nblue = deposition")) +
+            col.legend = tm_legend(title = "Elevation change (m)\nred = erosion\nblue = deposition",
+                                   position = tm_pos_in("right", "bottom"),
+                                   bg.color = "white", bg.alpha = 0.8)) +
   tm_shape(cl) + tm_lines(col = "grey30", lwd = 0.5, lty = "dashed") +
   tm_scalebar(position = c("left", "bottom")) +
   tm_compass(position = c("right", "top")) +
   tm_title("Elevation change, 2011 to 2020")
 
-tmap_save(m2, "figures/change_map.png", width = 7, height = 9, dpi = 200)
+tmap_save(m2, "figures/change_map.png", width = 8, dpi = 200)
 m2
 ```
