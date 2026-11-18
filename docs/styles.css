@@ -1,0 +1,10 @@
+/* ---- terrain background on every page ----
+   lidar hillshade of the plateau north of the valley, shaded the same way as the map's uplands */
+html { background: #081b2c; }
+body {
+  background:
+    url("figures/bg_terrain.jpg") center / cover fixed,
+    #081b2c;
+}
+.navbar { background: rgba(8, 27, 44, 0.80) !important; backdrop-filter: blur(6px);
+          border-bottom: 1px solid rgba(134, 193, 209, 0.15); }

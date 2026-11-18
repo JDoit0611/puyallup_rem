@@ -1,0 +1,579 @@
+---
+title: "7. Lower Puyallup valley REM"
+jupyter: python3
+---
+
+## Step 1 of the valley map: drawing the study rectangle and checking it on a map
+
+```{python}
+import os
+env = r"C:\Users\Jordan\miniforge3\envs\puyallup-rem\Library\share"
+os.environ["GDAL_DATA"] = os.path.join(env, "gdal")
+os.environ["PROJ_DATA"] = os.path.join(env, "proj")
+```
+
+```{python}
+import geopandas as gpd
+from shapely.geometry import box
+
+xmin, ymin, xmax, ymax = 541000, 5210000, 565000, 5238000
+study = gpd.GeoDataFrame({"name": ["Lower Puyallup valley"]},
+                         geometry=[box(xmin, ymin, xmax, ymax)], crs=26910)
+print(f"{(xmax - xmin) / 1000:.0f} km wide x {(ymax - ymin) / 1000:.0f} km tall")
+
+study.to_crs(4326).to_file("data/reach/valley_extent.geojson", driver="GeoJSON")
+
+m = study.explore(color="orange", style_kwds={"fill": False, "weight": 3},
+                  tiles="Esri.WorldImagery")
+m.save("valley_extent_map.html")
+```
+
+---
+## Step 2: download the elevation tiles
+
+```{python}
+from pathlib import Path
+import requests
+
+base = "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1m/Projects"
+downloads = {
+    ("WA_PierceCounty_2020_A20", "data/raw/usgs_dem2020"):
+        ["x54y522", "x54y523", "x54y524", "x55y522", "x55y523", "x55y524",
+         "x56y522", "x56y523", "x56y524"],
+    ("WA_KingCounty_2021_B21", "data/raw/usgs_dem2021_king"):
+        ["x54y524", "x55y523", "x55y524", "x56y523", "x56y524"],
+}
+
+for (project, folder), tiles in downloads.items():
+    out_dir = Path(folder)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for t in tiles:
+        name = f"USGS_1M_10_{t}_{project}.tif"
+        dest = out_dir / name
+        if dest.exists():
+            print("already have", name)
+            continue
+        print("downloading", name, "...")
+        url = f"{base}/{project}/TIFF/{name}"
+        tmp = dest.with_suffix(".part")
+        with requests.get(url, stream=True, timeout=120) as r:
+            r.raise_for_status()
+            with open(tmp, "wb") as f:
+                for chunk in r.iter_content(chunk_size=1024 * 1024):
+                    f.write(chunk)
+        tmp.replace(dest)
+        print("  done")
+```
+
+---
+## Step 3: mosaic the 14 tiles into one 3 m DEM
+
+```{python}
+import rasterio
+from rasterio.merge import merge
+from rasterio.enums import Resampling
+
+pierce = sorted(Path("data/raw/usgs_dem2020").glob("*.tif"))
+king = sorted(Path("data/raw/usgs_dem2021_king").glob("*.tif"))
+files = pierce + king      # Pierce first, so Pierce wins where both have data
+
+srcs = [rasterio.open(f) for f in files]
+mosaic, transform = merge(srcs, bounds=(xmin, ymin, xmax, ymax), res=3,
+                          resampling=Resampling.average, method="first")
+profile = srcs[0].profile
+for s in srcs:
+    s.close()
+
+profile.update(height=mosaic.shape[1], width=mosaic.shape[2], transform=transform,
+               compress="deflate", tiled=True, blockxsize=512, blockysize=512,
+               BIGTIFF="IF_SAFER")
+with rasterio.open("data/processed/valley_dem_3m.tif", "w", **profile) as dst:
+    dst.write(mosaic.astype("float32"))
+
+print(mosaic.shape)
+```
+```{python}
+import numpy as np
+import matplotlib.pyplot as plt
+
+dem = np.where(mosaic[0] == profile["nodata"], np.nan, mosaic[0])
+print(f"elevation {np.nanmin(dem):.1f} to {np.nanmax(dem):.1f} m, "
+      f"{np.isnan(dem).mean() * 100:.2f}% no data")
+
+plt.figure(figsize=(6, 7))
+plt.imshow(dem[::4, ::4], cmap="terrain")
+plt.colorbar(label="elevation (m)")
+plt.title("Lower Puyallup valley DEM, 3 m")
+```
+
+
+---
+## Step 4: get the three river lines
+
+```{python}
+import pandas as pd
+
+lon_min, lat_min, lon_max, lat_max = study.to_crs(4326).total_bounds
+
+url = "https://hydro.nationalmap.gov/arcgis/rest/services/nhd/MapServer/6/query"
+params = {
+    "where": "GNIS_NAME IN ('Puyallup River','Carbon River','White River')",
+    "geometry": f"{lon_min},{lat_min},{lon_max},{lat_max}",
+    "geometryType": "esriGeometryEnvelope",
+    "inSR": 4326,
+    "outFields": "GNIS_NAME",
+    "outSR": 4326,
+    "f": "geojson",
+}
+r = requests.get(url, params=params, timeout=60)
+r.raise_for_status()
+flow = gpd.GeoDataFrame.from_features(r.json()["features"], crs=4326)
+
+# the last stretch of the Puyallup to Commencement Bay has no name in NHD
+params_mouth = dict(params,
+                    where="FTYPE=558 AND GNIS_NAME IS NULL",
+                    geometry="-122.42,47.238,-122.40,47.252")
+r2 = requests.get(url, params=params_mouth, timeout=60)
+r2.raise_for_status()
+mouth = gpd.GeoDataFrame.from_features(r2.json()["features"], crs=4326)
+mouth["gnis_name"] = "Puyallup River"
+
+flow = pd.concat([flow, mouth], ignore_index=True)
+flow = flow.to_crs(26910).clip(study).explode(index_parts=False)
+flow.to_file("data/reach/valley_rivers.geojson", driver="GeoJSON")
+
+flow["length_km"] = flow.length / 1000
+flow.groupby("gnis_name")["length_km"].sum().round(1)
+```
+```{python}
+left, top = transform.c, transform.f
+extent = (left, left + 3 * mosaic.shape[2], top - 3 * mosaic.shape[1], top)
+
+fig, ax = plt.subplots(figsize=(6, 7))
+ax.imshow(dem[::4, ::4], cmap="terrain", extent=extent)
+flow.plot(ax=ax, column="gnis_name", legend=True, linewidth=1, cmap="autumn")
+ax.set_title("River lines over the valley DEM")
+```
+
+---
+## Step 5: the valley REM
+
+```{python}
+from rasterio.transform import rowcol
+
+def low_point(x, y, half=5):
+    row, col = rowcol(transform, x, y)
+    win = dem[max(row - half, 0):row + half + 1, max(col - half, 0):col + half + 1]
+    if win.size == 0 or np.all(np.isnan(win)):
+        return np.nan
+    return np.nanpercentile(win, 5)
+
+rows = []
+for name, line in zip(flow.gnis_name, flow.geometry):
+    for d in np.arange(0, line.length, 25):
+        p = line.interpolate(d)
+        rows.append({"river": name, "x": p.x, "y": p.y, "z": low_point(p.x, p.y)})
+
+pts = pd.DataFrame(rows).dropna()
+pts.groupby("river").z.describe()
+```
+
+---
+## 5b. Build the water surface and the REM
+
+```{python}
+from rasterio.transform import Affine
+from rasterio.warp import reproject, Resampling
+from scipy.spatial import cKDTree
+from scipy.ndimage import gaussian_filter
+
+tree = cKDTree(pts[["x", "y"]].values)
+z_river = pts["z"].values
+
+# water surface on a coarse grid: 10 cells = 30 m
+step = 10
+ch, cw = int(np.ceil(dem.shape[0] / step)), int(np.ceil(dem.shape[1] / step))
+coarse_t = transform * Affine.scale(step)
+cx = coarse_t.c + (np.arange(cw) + 0.5) * coarse_t.a
+cy = coarse_t.f + (np.arange(ch) + 0.5) * coarse_t.e
+X, Y = np.meshgrid(cx, cy)
+
+dist, idx = tree.query(np.column_stack([X.ravel(), Y.ravel()]), k=48)
+w = 1 / np.maximum(dist, 1) ** 2
+ws_coarse = (np.sum(w * z_river[idx], axis=1) / np.sum(w, axis=1)).reshape(ch, cw)
+ws_coarse = gaussian_filter(ws_coarse, sigma=5)
+
+# back to 3 m, then subtract
+ws = np.empty_like(dem)
+reproject(ws_coarse.astype("float32"), ws,
+          src_transform=coarse_t, dst_transform=transform,
+          src_crs=profile["crs"], dst_crs=profile["crs"],
+          resampling=Resampling.bilinear)
+rem = dem - ws
+
+rem_profile = profile.copy()
+rem_profile.update(dtype="float32", nodata=np.nan)
+with rasterio.open("data/processed/rem_valley_3m.tif", "w", **rem_profile) as dst:
+    dst.write(rem.astype("float32"), 1)
+
+np.nanpercentile(rem, [1, 10, 25, 50, 75]).round(2)
+```
+
+### ~~~~~~~~~~~~~ Step 3b: fill the gaps ~~~~~~~~~~~~~~~~~
+
+```{python}
+ned_url = ("https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/13/"
+           "TIFF/current/n48w123/USGS_13_n48w123.tif")
+ned_path = Path("data/raw/usgs_ned_13/USGS_13_n48w123.tif")
+ned_path.parent.mkdir(parents=True, exist_ok=True)
+
+if not ned_path.exists():
+    print("downloading 10 m DEM ...")
+    tmp = ned_path.with_suffix(".part")
+    with requests.get(ned_url, stream=True, timeout=120) as r:
+        r.raise_for_status()
+        with open(tmp, "wb") as f:
+            for chunk in r.iter_content(chunk_size=1024 * 1024):
+                f.write(chunk)
+    tmp.replace(ned_path)
+
+# put the 10 m DEM on our exact 3 m grid
+with rasterio.open(ned_path) as src:
+    ned = np.full(dem.shape, np.nan, dtype="float32")
+    reproject(rasterio.band(src, 1), ned,
+              dst_transform=transform, dst_crs=profile["crs"],
+              resampling=Resampling.bilinear, dst_nodata=np.nan)
+
+# fill only the holes
+gaps = np.isnan(dem)
+dem_filled = np.where(gaps, ned, dem).astype("float32")
+
+# make the filled bay match the bay water level in the 1 m data
+bay_level = np.nanmedian(dem[dem < 0.5])
+bay_gap = gaps & (ned < 1)
+dem_filled[bay_gap] = bay_level
+print(f"bay water set to {bay_level:.2f} m")
+
+print(f"filled {gaps.mean() * 100:.2f}% of the map, "
+      f"{np.isnan(dem_filled).mean() * 100:.2f}% still empty")
+
+# save, and rebuild the REM with the filled DEM
+with rasterio.open("data/processed/valley_dem_3m_filled.tif", "w",
+                   **dict(profile, nodata=np.nan)) as dst:
+    dst.write(dem_filled, 1)
+
+rem = dem_filled - ws
+with rasterio.open("data/processed/rem_valley_3m.tif", "w", **rem_profile) as dst:
+    dst.write(rem.astype("float32"), 1)
+```
+
+### ~~~~~~~ 3c. Seafloor for Commencement Bay (NOAA topobathy) ~~~~~~~~~~~~~ 
+
+```{python}
+from pathlib import Path
+import requests
+import numpy as np
+import rasterio
+from rasterio.warp import reproject, Resampling
+
+bathy_dir = Path("data/raw/noaa_cudem")
+bathy_dir.mkdir(parents=True, exist_ok=True)
+base = ("https://chs.coast.noaa.gov/htdata/raster2/elevation/"
+        "NCEI_ninth_Topobathy_2014_8483/wash_pugetsound/")
+names = ["ncei19_n47x50_w122x50_2023v1.tif",   # 47.25-47.50 N: most of the bay
+         "ncei19_n47x25_w122x50_2024v1.tif"]   # 47.00-47.25 N: the south end of the waterways
+
+for name in names:
+    out = bathy_dir / name
+    if out.exists():
+        print("already have", name)
+        continue
+    part = out.with_suffix(".part")
+    with requests.get(base + name, stream=True, timeout=120) as r:
+        r.raise_for_status()
+        with open(part, "wb") as f:
+            for chunk in r.iter_content(1 << 20):
+                f.write(chunk)
+    part.rename(out)
+    print("downloaded", name)
+
+# put the NOAA tiles onto our 3 m grid
+with rasterio.open("data/processed/valley_dem_3m_filled.tif") as src:
+    land = src.read(1)
+    prof = src.profile
+
+bathy = np.full(land.shape, np.nan, dtype="float32")
+for name in names:
+    with rasterio.open(bathy_dir / name) as src:
+        piece = np.full(land.shape, np.nan, dtype="float32")
+        reproject(rasterio.band(src, 1), piece, src_nodata=src.nodata,
+                  dst_transform=prof["transform"], dst_crs=prof["crs"], dst_nodata=np.nan,
+                  resampling=Resampling.bilinear)
+    bathy = np.where(np.isnan(bathy), piece, bathy)
+
+# keep only cells that are flat water in our DEM and below sea level in NOAA's
+water = (land < 0.5) & (bathy < 0)
+seafloor = np.where(water, bathy, np.nan).astype("float32")
+print(f"seafloor cells: {water.sum():,}")
+print(f"depth range: {np.nanmin(seafloor):.0f} m to {np.nanmax(seafloor):.1f} m")
+
+p = prof.copy()
+p.update(dtype="float32", nodata=np.nan, compress="deflate", predictor=3, tiled=True)
+with rasterio.open("data/processed/valley_seafloor_3m.tif", "w", **p) as dst:
+    dst.write(seafloor, 1)
+
+fig, ax = plt.subplots(figsize=(7, 6))
+im = ax.imshow(seafloor, cmap="viridis")
+ax.set_xlim(0, 3500); ax.set_ylim(3500, 0)   # zoom to the bay corner
+plt.colorbar(im, ax=ax, label="Depth (m, NAVD88)")
+ax.set_title("Commencement Bay seafloor (NOAA CUDEM)")
+plt.show()
+```
+---
+## 5c. A first look
+
+```{python}
+fig, ax = plt.subplots(figsize=(6, 7))
+im = ax.imshow(rem[::3, ::3], cmap="Blues", vmin=0, vmax=10, extent=extent)
+plt.colorbar(im, ax=ax, label="height above river (m)", shrink=0.6)
+ax.set_title("Lower Puyallup valley REM (first look)")
+ax.set_xlim(extent[0], extent[1])
+ax.set_ylim(extent[2], extent[3])
+```
+
+---
+## Step 5d: check for ground “below the river”
+
+```{python}
+print(f"{np.nanmean(rem < -1) * 100:.1f}% of cells are more than 1 m below the estimated water surface")
+
+fig, ax = plt.subplots(figsize=(6, 7))
+im = ax.imshow(np.clip(rem[::3, ::3], -5, 5), cmap="RdBu", vmin=-5, vmax=5, extent=extent)
+plt.colorbar(im, ax=ax, label="REM (m): red = below water surface", shrink=0.6)
+flow.plot(ax=ax, color="black", linewidth=0.5)
+ax.set_title("Check: where is the ground below the river?")
+ax.set_xlim(extent[0], extent[1])
+ax.set_ylim(extent[2], extent[3])
+```
+
+
+### 6a. Layers
+
+```{python}
+import gc
+import logging
+import numpy as np
+import rasterio
+import geopandas as gpd
+import matplotlib.pyplot as plt
+import matplotlib.patheffects as pe
+from matplotlib.colors import LinearSegmentedColormap, to_rgb
+from rasterio import features
+from scipy import ndimage
+from pyproj import Transformer
+from PIL import Image
+
+CELL = 3  # full 3 m detail
+
+def read_band(path):
+    with rasterio.open(path) as src:
+        return src.read(1).astype("float32"), src.transform
+
+rem_map, tf = read_band("data/processed/rem_valley_3m.tif")
+dem_map, _ = read_band("data/processed/valley_dem_3m_filled.tif")
+H, W = rem_map.shape
+ext = (tf.c, tf.c + W * tf.a, tf.f + H * tf.e, tf.f)
+
+# valley floor = low ground (< 15 m above the river) connected to one of the rivers
+rivers = gpd.read_file("data/reach/valley_rivers.geojson").to_crs(26910)
+river_px = features.rasterize(((g, 1) for g in rivers.geometry), out_shape=(H, W),
+                              transform=tf, all_touched=True).astype(bool)
+low = rem_map < 15
+labels, n = ndimage.label(low)
+keep = np.unique(labels[river_px & low])
+valley = np.isin(labels, keep[keep > 0])
+del labels, low, river_px
+print(f"valley floor: {valley.mean() * 100:.1f}% of the map")
+
+# seafloor: keep the open bay and the waterways joined to it (drops stray river bits)
+seafloor, _ = read_band("data/processed/valley_seafloor_3m.tif")
+sea_lab, _ = ndimage.label(~np.isnan(seafloor))
+sizes = np.bincount(sea_lab.ravel())
+sizes[0] = 0
+sea = sea_lab == sizes.argmax()
+del sea_lab
+print(f"seafloor: {sea.sum() * CELL * CELL / 1e6:.1f} km2, down to {np.nanmin(seafloor[sea]):.0f} m")
+```
+
+### 6b. Colors, relief and glow
+
+```{python}
+stops = ["#f7fcfd", "#d3ecf2", "#86c1d1", "#2e7594", "#123d5d", "#081b2c"]
+deep = LinearSegmentedColormap.from_list("deep", stops)
+BG, TEXT, SUB = "#081b2c", "#e8f3f6", "#9dbfcc"
+
+RMAX, K = 10.0, 0.8   # colors fade out by 10 m; K sets how fast (smaller = faster)
+val = np.where(valley, np.clip(rem_map, 0, RMAX), RMAX).astype("float32")
+t = (np.log1p(val / K) / np.log1p(RMAX / K)).astype("float32")   # 0 = river level, 1 = 10 m or more
+del val
+
+# color through a lookup table (much lighter on memory than deep(t))
+lut = deep(np.linspace(0, 1, 1024))[:, :3].astype("float32")
+rgb = lut[(t * 1023).astype("uint16")]
+
+# the bay and port waterways (the river keeps its REM colors all the way to its mouth)
+water = sea
+
+# the bay gets its own gradient: light where shallow (the delta), dark where deep
+sea_stops = ["#8cc4d3", "#3f86a2", "#1a4d6a", "#0b2236"]
+sea_cmap = LinearSegmentedColormap.from_list("sea", sea_stops)
+DEPTH_MAX = 150.0
+d = (np.clip(-seafloor[sea], 0, DEPTH_MAX) / DEPTH_MAX) ** 0.6   # spreads out the shallow end
+rgb[sea] = sea_cmap(d)[:, :3]
+del d
+
+# shade from one surface: land from the lidar DEM, the bay from the NOAA seafloor
+relief = np.where(sea, seafloor, dem_map)
+VEX = 4.0                                        # vertical exaggeration (higher = more relief)
+
+def hillshade(z, azdeg, altdeg):
+    """Same math as matplotlib's LightSource.hillshade, but in float32 so it fits in memory."""
+    gy, gx = np.gradient(z * np.float32(VEX), np.float32(-CELL), np.float32(CELL))
+    az, alt = np.radians(90 - azdeg), np.radians(altdeg)
+    lx, ly, lz = np.cos(az) * np.cos(alt), np.sin(az) * np.cos(alt), np.sin(alt)
+    hs = (-gx * lx - gy * ly + lz) / np.sqrt(gx * gx + gy * gy + 1)
+    del gx, gy
+    lo, hi = np.nanpercentile(hs, [0.1, 99.9])
+    return np.clip((hs - lo) / (hi - lo), 0, 1).astype("float32")
+
+hs = 0.75 * hillshade(relief, 315, 35) + 0.25 * hillshade(relief, 225, 50)   # main NW light + soft SW fill
+edge = ndimage.gaussian_filter(valley.astype("float32"), sigma=15)   # 0 uplands, 1 valley, feathered between
+strength = 0.70 - 0.30 * edge                    # 0.40 on the valley floor, 0.70 on the uplands
+strength[sea] = 0.75                             # strong relief on the seafloor
+shade = 1 - strength * (1 - hs)
+rgb *= shade[..., None]
+
+# lift sunlit slopes so relief shows even on the near-black uplands and in the bay
+LIFT = 0.16                                      # higher = brighter ridges
+sun = np.clip(hs - 0.55, 0, None) * (LIFT * (1 - 0.6 * edge))
+sun[sea] = np.clip(hs[sea] - 0.55, 0, None) * LIFT * 1.5
+for i, c in enumerate(to_rgb(stops[2])):
+    rgb[..., i] += sun * c
+del hs, edge, strength, shade, sun, relief
+
+# glow around the river
+glow = ndimage.gaussian_filter((1 - t) * (valley & ~water), sigma=20)   # 20 cells x 3 m = 60 m
+del t
+gcol = np.array(to_rgb(stops[1]), dtype="float32")
+for i in range(3):                                   # screen blend, one color band at a time
+    rgb[..., i] = 1 - (1 - rgb[..., i]) * (1 - 0.30 * glow * gcol[i])
+del glow
+np.clip(rgb, 0, 1, out=rgb)
+
+# shrink the 3 m picture to exactly 4K wide with a sharp Lanczos filter
+PX_W, PX_H = 5120, 5973   # sharp enough for close zooms on the story page
+img = np.asarray(Image.fromarray((rgb * 255).round().astype("uint8")).resize((PX_W, PX_H), Image.LANCZOS))
+del rgb
+gc.collect()
+```
+
+### 6c. Poster layout
+
+```{python}
+logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)  # quiet missing-font notes
+
+SERIF = ["Lora", "Georgia", "DejaVu Serif"]
+SANS = ["Inter", "Segoe UI", "DejaVu Sans"]
+to_utm = Transformer.from_crs(4326, 26910, always_xy=True)
+halo = [pe.withStroke(linewidth=3, foreground=BG, alpha=0.6)]
+
+towns = {"Tacoma": (-122.448, 47.243), "Fife": (-122.357, 47.236), "Puyallup": (-122.300, 47.188),
+         "Sumner": (-122.234, 47.205), "Pacific": (-122.272, 47.265), "Orting": (-122.204, 47.098)}
+river_names = {"Puyallup River": (-122.375, 47.222, -27), "White River": (-122.217, 47.240, 72),
+               "Carbon River": (-122.172, 47.108, 22)}
+
+fig = plt.figure(figsize=(12, 14), facecolor=BG)
+ax = fig.add_axes([0, 0, 1, 1])
+ax.imshow(img, extent=ext, interpolation="antialiased")
+ax.set_xlim(ext[0], ext[1])
+ax.set_ylim(ext[2], ext[3])
+ax.axis("off")
+
+# title block on the empty plateau
+ax.text(0.055, 0.335, "PUYALLUP  RIVER", transform=ax.transAxes, color=TEXT,
+        fontsize=40, fontfamily=SERIF)
+ax.text(0.057, 0.31, "Relative Elevation Model  \u00b7  Orting to Commencement Bay",
+        transform=ax.transAxes, color=SUB, fontsize=14, fontfamily=SERIF, style="italic")
+ax.text(0.057, 0.245,
+        "A relative elevation model shows the land's height above the\n"
+        "nearby river instead of above sea level. With the downstream slope\n"
+        "removed, old channels, meander scars and low ground that would\n"
+        "flood first stand out on the valley floor.",
+        transform=ax.transAxes, color=SUB, fontsize=10.5, fontfamily=SANS, va="top", linespacing=1.6)
+
+# legend
+lax = fig.add_axes([0.058, 0.06, 0.022, 0.085])
+lax.imshow(np.linspace(1, 0, 256)[:, None], cmap=deep, aspect="auto")
+lax.axis("off")
+fig.text(0.088, 0.143, "10 m or more above the river", color=SUB, fontsize=9.5, fontfamily=SANS, va="center")
+fig.text(0.088, 0.063, "River surface and below", color=SUB, fontsize=9.5, fontfamily=SANS, va="center")
+
+# town and river labels
+for name, (lon, lat) in towns.items():
+    x, y = to_utm.transform(lon, lat)
+    ax.text(x, y, name.upper(), color=TEXT, fontsize=9, fontfamily=SANS,
+            ha="center", va="center", path_effects=halo)
+for name, (lon, lat, angle) in river_names.items():
+    x, y = to_utm.transform(lon, lat)
+    ax.text(x, y, name, color=TEXT, fontsize=10, fontfamily=SERIF, style="italic",
+            rotation=angle, ha="center", va="center", path_effects=halo)
+
+# bay label
+x, y = to_utm.transform(-122.433, 47.279)
+ax.text(x, y, "Commencement\nBay", color=TEXT, fontsize=11, fontfamily=SERIF, style="italic",
+        ha="center", va="center", path_effects=halo)
+
+# scale bar
+sx = ext[0] + 0.30 * (ext[1] - ext[0])
+sy = ext[2] + 0.075 * (ext[3] - ext[2])
+ax.plot([sx, sx + 5000], [sy, sy], color=SUB, lw=2)
+ax.text(sx + 2500, sy + 350, "5 km", color=SUB, fontsize=9, fontfamily=SANS, ha="center")
+
+# north arrow beside the scale bar: arrow on top, N underneath
+nx, ny = sx + 7500, sy - 300
+ax.annotate("", xy=(nx, ny + 1700), xytext=(nx, ny + 300),
+            arrowprops=dict(arrowstyle="-|>,head_width=0.35,head_length=0.7", color=TEXT, lw=1.5))
+ax.text(nx, ny, "N", color=TEXT, fontsize=13, fontfamily=SERIF, ha="center", va="top", path_effects=halo)
+
+# credits
+fig.text(0.058, 0.022, "Data: USGS 3DEP 1 m DEM (Pierce 2020, King 2021), NOAA NCEI CUDEM topobathy, "
+         "USGS NHD. Method after Daniel Coe (IDW REM). Map: Jordan, 2026.",
+         color=SUB, fontsize=7.5, fontfamily=SANS, alpha=0.8)
+
+fig.savefig("figures/valley_rem_4k.png", dpi=320, facecolor=BG)   # 3840 x 4480
+fig.savefig("figures/valley_rem_web.png", dpi=110, facecolor=BG)  # website version
+```
+
+### 6d. Clean map for the story page
+
+```{python}
+fig = plt.figure(figsize=(12, 14), facecolor=BG)
+ax = fig.add_axes([0, 0, 1, 1])
+ax.imshow(img, extent=ext, interpolation="none")
+ax.set_xlim(ext[0], ext[1])
+ax.set_ylim(ext[2], ext[3])
+ax.axis("off")
+for name, (lon, lat) in towns.items():
+    x, y = to_utm.transform(lon, lat)
+    ax.text(x, y, name.upper(), color=TEXT, fontsize=10, fontfamily=SANS,
+            ha="center", va="center", path_effects=halo)
+for name, (lon, lat, angle) in river_names.items():
+    x, y = to_utm.transform(lon, lat)
+    ax.text(x, y, name, color=TEXT, fontsize=11, fontfamily=SERIF, style="italic",
+            rotation=angle, ha="center", va="center", path_effects=halo)
+x, y = to_utm.transform(-122.433, 47.279)
+ax.text(x, y, "Commencement\nBay", color=TEXT, fontsize=12, fontfamily=SERIF, style="italic",
+        ha="center", va="center", path_effects=halo)
+fig.savefig("figures/valley_story.jpg", dpi=PX_W / 12, facecolor=BG, pil_kwargs={"quality": 88})   # 5120 px wide
+plt.close(fig)
+```

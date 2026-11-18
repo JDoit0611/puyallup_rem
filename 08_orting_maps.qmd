@@ -1,0 +1,474 @@
+---
+title: "Orting maps and story layers in the site style"
+jupyter: python3
+---
+
+Everything here writes to `figures/`. Run the chunks in order; each one stands on its own.
+
+## 1. Orting REM and change maps (Orting Study page)
+
+```{python}
+import numpy as np, rasterio, logging
+import matplotlib.pyplot as plt, matplotlib.patheffects as pe
+from matplotlib.colors import LinearSegmentedColormap, to_rgb
+from rasterio.enums import Resampling
+from scipy import ndimage
+from pyproj import Transformer
+from PIL import Image
+logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
+
+D = "data/processed/"
+K2 = 2                     # read every 2 m (plenty for a web figure)
+CELL = 1.0 * K2
+def rd(name):
+    with rasterio.open(D + name) as s:
+        a = s.read(1, out_shape=(s.height // K2, s.width // K2), resampling=Resampling.average).astype("float32")
+        b = s.bounds
+    return a, (b.left, b.right, b.bottom, b.top)
+
+rem, ext = rd("rem_2020_1m.tif")
+dod, _ = rd("dod_2011_2020.tif")
+dtm, _ = rd("dtm_2020_1m.tif")
+inside = np.isfinite(dtm)
+
+BG, TEXT, SUB = "#081b2c", "#e8f3f6", "#9dbfcc"
+stops = ["#f7fcfd", "#d3ecf2", "#86c1d1", "#2e7594", "#123d5d", "#081b2c"]
+deep = LinearSegmentedColormap.from_list("deep", stops)
+SERIF = ["Lora", "Georgia", "DejaVu Serif"]; SANS = ["Inter", "Segoe UI", "DejaVu Sans"]
+halo = [pe.withStroke(linewidth=3, foreground=BG, alpha=0.6)]
+to_sp = Transformer.from_crs(4326, 2856, always_xy=True)
+
+def hillshade(z, azdeg=315, altdeg=35, vex=3.0):
+    z = np.where(np.isfinite(z), z, np.nanmedian(z))
+    gy, gx = np.gradient(z * vex, -CELL, CELL)
+    az, alt = np.radians(90 - azdeg), np.radians(altdeg)
+    lx, ly, lz = np.cos(az) * np.cos(alt), np.sin(az) * np.cos(alt), np.sin(alt)
+    hs = (-gx * lx - gy * ly + lz) / np.sqrt(gx * gx + gy * gy + 1)
+    lo, hi = np.nanpercentile(hs[inside], [0.5, 99.5])
+    return np.clip((hs - lo) / (hi - lo), 0, 1).astype("float32")
+
+hs = 0.75 * hillshade(dtm, 315, 35) + 0.25 * hillshade(dtm, 225, 50)
+
+FADE_M = 100.0   # width of the soft edge, in metres
+
+def finish(rgb, path, legend):
+    # outside the study area is see-through, with a wide soft fade, so the map sits on the page's terrain background
+    # fade by distance from the study-area edge: fully see-through AT the edge, fully solid FADE_M inside
+    # pad with a ring of "outside" so the fade also reaches zero where the study area touches the raster's edge
+    dist = ndimage.distance_transform_edt(np.pad(inside, 1))[1:-1, 1:-1] * CELL   # metres to the nearest outside cell
+    fade = np.clip(dist / FADE_M, 0, 1)
+    fade = fade * fade * (3 - 2 * fade)                       # smoothstep: eases in and out, no visible line
+    rgba = np.dstack([np.clip(np.nan_to_num(rgb), 0, 1), fade])
+    # shrink to the final size with Pillow, which handles see-through edges correctly
+    # ("RGBa" = premultiplied alpha, so faded edges don't pick up a white halo)
+    h, w = rgba.shape[:2]
+    W_OUT = 1200; H_OUT = round(W_OUT * h / w)
+    im = Image.fromarray((rgba * 255).round().astype("uint8"), "RGBA").convert("RGBa")
+    im = np.asarray(im.resize((W_OUT, H_OUT), Image.LANCZOS).convert("RGBA"))
+    fig = plt.figure(figsize=(W_OUT / 200, H_OUT / 200), facecolor="none")
+    ax = fig.add_axes([0, 0, 1, 1]); ax.imshow(im, extent=ext, interpolation="none"); ax.axis("off")
+    x, y = to_sp.transform(-122.204, 47.098)
+    ax.text(x, y, "ORTING", color=TEXT, fontsize=12, fontfamily=SANS, ha="center", va="center", path_effects=halo)
+    for name, fx, fy, rot in [("Puyallup River", 0.38, 0.64, 68), ("Carbon River", 0.76, 0.42, -42)]:
+        x, y = ext[0] + fx * (ext[1] - ext[0]), ext[3] - fy * (ext[3] - ext[2])
+        ax.text(x, y, name, color=TEXT, fontsize=12, fontfamily=SERIF, style="italic", rotation=rot,
+                ha="center", va="center", path_effects=halo)
+    legend(fig)
+    # 1 km scale bar
+    sx, sy = ext[0] + 0.06 * (ext[1] - ext[0]), ext[2] + 0.035 * (ext[3] - ext[2])
+    ax.plot([sx, sx + 1000], [sy, sy], color=SUB, lw=2)
+    ax.text(sx + 500, sy + 150, "1 km", color=SUB, fontsize=10, fontfamily=SANS, ha="center")
+    fig.savefig(path, dpi=200, transparent=True); plt.close(fig)
+
+# ---- REM map --------------------------------------------------------------
+RMAX = 6.0
+t = (np.clip(np.nan_to_num(rem, nan=RMAX), 0, RMAX) / RMAX) ** 0.5   # 0 = river, 1 = 6 m or more; the square root stretches the low end
+low = t < 1
+rgb = deep(t)[..., :3].astype("float32")
+edge = ndimage.gaussian_filter(low.astype("float32"), 6)
+strength = 0.70 - 0.30 * edge
+rgb *= (1 - strength * (1 - hs))[..., None]
+sun = np.clip(hs - 0.55, 0, None) * 0.16 * (1 - 0.6 * edge)
+rgb += sun[..., None] * np.array(to_rgb(stops[2]))
+glow = ndimage.gaussian_filter((1 - t) * low, 12)
+rgb = 1 - (1 - rgb) * (1 - 0.25 * glow[..., None] * np.array(to_rgb(stops[1])))
+
+def rem_legend(fig):
+    lax = fig.add_axes([0.07, 0.10, 0.03, 0.13])
+    lax.imshow(np.linspace(1, 0, 256)[:, None] ** 0.5, cmap=deep, aspect="auto"); lax.axis("off")
+    fig.text(0.115, 0.225, "6 m or more above the river", color=SUB, fontsize=10.5, fontfamily=SANS, va="center")
+    fig.text(0.115, 0.105, "River level or below", color=SUB, fontsize=10.5, fontfamily=SANS, va="center")
+finish(rgb, "figures/rem_map.png", rem_legend)
+
+# ---- change map -----------------------------------------------------------
+LOD, CMAX = 0.23, 1.5
+ERODE, DEPOSIT = np.array(to_rgb("#ff6b5b")), np.array(to_rgb("#5cc8f0"))
+base = np.array(to_rgb("#081b2c")) + (np.array(to_rgb("#1d3d54")) - np.array(to_rgb("#081b2c"))) * hs[..., None]
+d = np.nan_to_num(dod, nan=0.0)
+a = np.clip((np.abs(d) - LOD) / (CMAX - LOD), 0, 1) ** 0.7
+a = np.where(np.abs(d) < LOD, 0, 0.35 + 0.65 * a)[..., None]
+col = np.where((d < 0)[..., None], ERODE, DEPOSIT)
+rgb = base * (1 - a) + col * a
+glow_e = ndimage.gaussian_filter((a[..., 0] * (d < 0)).astype("float32"), 4)
+glow_d = ndimage.gaussian_filter((a[..., 0] * (d > 0)).astype("float32"), 4)
+rgb = 1 - (1 - rgb) * (1 - 0.35 * glow_e[..., None] * ERODE) * (1 - 0.35 * glow_d[..., None] * DEPOSIT)
+
+def dod_legend(fig):
+    lax = fig.add_axes([0.07, 0.10, 0.03, 0.13])
+    ramp = np.concatenate([np.tile(DEPOSIT, (128, 1)) * np.linspace(1, 0.35, 128)[:, None],
+                           np.tile(ERODE, (128, 1)) * np.linspace(0.35, 1, 128)[:, None]])
+    lax.imshow(ramp[:, None, :], aspect="auto"); lax.axis("off")
+    fig.text(0.115, 0.225, "Deposition (ground built up)", color=SUB, fontsize=10.5, fontfamily=SANS, va="center")
+    fig.text(0.115, 0.105, "Erosion (ground lowered)", color=SUB, fontsize=10.5, fontfamily=SANS, va="center")
+finish(rgb, "figures/change_map.png", dod_legend)
+```
+
+## 2. Change layer for the story (sits on the valley map)
+
+```{python}
+# ---- story overlay: Orting change layer, in the valley map's coordinates (UTM 10N) ----
+import numpy as np, rasterio
+from rasterio.enums import Resampling
+from rasterio.warp import reproject, calculate_default_transform
+from matplotlib.colors import to_rgb
+from scipy import ndimage
+from PIL import Image
+
+D = "data/processed/"
+with rasterio.open(D + "dod_2011_2020.tif") as s:
+    k = 2                                                     # 2 m cells
+    dod = s.read(1, out_shape=(s.height // k, s.width // k), resampling=Resampling.average).astype("float32")
+    src_t = s.transform * s.transform.scale(s.width / dod.shape[1], s.height / dod.shape[0])
+    src_crs, b = s.crs, s.bounds
+with rasterio.open(D + "dtm_2020_1m.tif") as s:
+    inside = np.isfinite(s.read(1, out_shape=dod.shape, resampling=Resampling.average))
+
+# colors: a dark wash over the study area so the change stands out, then erosion / deposition on top
+LOD, CMAX = 0.23, 1.5
+ERODE, DEPOSIT, WASH = np.array(to_rgb("#ff6b5b")), np.array(to_rgb("#5cc8f0")), np.array(to_rgb("#06213a"))
+d = np.nan_to_num(dod, nan=0.0)
+a = np.clip((np.abs(d) - LOD) / (CMAX - LOD), 0, 1) ** 0.7
+a = np.where(np.abs(d) < LOD, 0, 0.45 + 0.55 * a)
+col = np.where((d < 0)[..., None], ERODE, DEPOSIT)
+dist = ndimage.distance_transform_edt(np.pad(inside, 1))[1:-1, 1:-1] * k    # metres to the edge (padded so raster borders count)
+edge = np.clip(dist / 300.0, 0, 1)                                          # 0 at the study-area edge, 1 at 300 m in
+edge = edge * edge * (3 - 2 * edge)                                         # smoothstep
+# two layers, so the story can fade the wash in first and then reveal the change on top of it
+wash = np.dstack([np.broadcast_to(WASH, col.shape), 0.70 * edge]).astype("float32")
+lines = np.dstack([col, a * edge]).astype("float32")
+
+# reproject both to UTM 10N (the valley map's system) on a 3 m grid
+dst_t, w, h = calculate_default_transform(src_crs, 26910, dod.shape[1], dod.shape[0], *b, resolution=3.0)
+for layer, name in [(wash, "orting_change_wash.webp"), (lines, "orting_change_lines.webp")]:
+    out = np.zeros((4, h, w), dtype="float32")
+    for i in range(4):
+        reproject(np.ascontiguousarray(layer[..., i]), out[i], src_transform=src_t, src_crs=src_crs,
+                  dst_transform=dst_t, dst_crs=26910, resampling=Resampling.bilinear,
+                  src_nodata=None, dst_nodata=0)
+    img = (np.clip(np.moveaxis(out, 0, -1), 0, 1) * 255).round().astype("uint8")
+    Image.fromarray(img, "RGBA").save("figures/" + name, quality=85, method=6)
+
+# where both layers sit on the valley map, as percentages (these go in story.qmd)
+X0, X1, Y0, Y1 = 541000, 565000, 5210000, 5238000
+left, top = dst_t.c, dst_t.f
+right, bottom = left + w * dst_t.a, top + h * dst_t.e
+print(f"left: {(left - X0) / (X1 - X0) * 100:.3f}%; top: {(Y1 - top) / (Y1 - Y0) * 100:.3f}%; "
+      f"width: {(right - left) / (X1 - X0) * 100:.3f}%; height: {(top - bottom) / (Y1 - Y0) * 100:.3f}%;")
+```
+
+## 3. Site background (lidar plateau north of the valley)
+
+```{python}
+# site background: lidar hillshade of the plateau north of the valley, shaded like the map's uplands
+import numpy as np, rasterio
+from rasterio.windows import from_bounds
+from matplotlib.colors import to_rgb
+from PIL import Image
+
+CELL = 3.0
+BG, LIFT_C = np.array(to_rgb("#081b2c")), np.array(to_rgb("#86c1d1"))
+def hillshade(z, azdeg, altdeg, vex=4.0):
+    gy, gx = np.gradient(z * np.float32(vex), np.float32(-CELL), np.float32(CELL))
+    az, alt = np.radians(90 - azdeg), np.radians(altdeg)
+    lx, ly, lz = np.cos(az) * np.cos(alt), np.sin(az) * np.cos(alt), np.sin(alt)
+    hs = (-gx * lx - gy * ly + lz) / np.sqrt(gx * gx + gy * gy + 1)
+    lo, hi = np.nanpercentile(hs, [0.1, 99.9])
+    return np.clip((hs - lo) / (hi - lo), 0, 1).astype("float32")
+
+x0, y0, w_px, h_px = 550000, 5229000, 2560, 1600          # 7.7 x 4.8 km, one pixel per 3 m cell
+with rasterio.open("data/processed/valley_dem_3m_filled.tif") as s:
+    win = from_bounds(x0, y0, x0 + w_px * CELL, y0 + h_px * CELL, s.transform)
+    z = s.read(1, window=win).astype("float32")
+z = np.where(np.isfinite(z), z, np.nanmedian(z))
+hs = 0.75 * hillshade(z, 315, 35) + 0.25 * hillshade(z, 225, 50)
+rgb = BG * (1 - 0.70 * (1 - hs))[..., None]                                 # shaded dark base
+rgb = rgb + (np.clip(hs - 0.55, 0, None) * 0.16)[..., None] * LIFT_C        # sunlit slopes lifted in teal
+Image.fromarray((np.clip(rgb, 0, 1) * 255).round().astype("uint8")).save("figures/bg_terrain.jpg", quality=88)
+```
+
+## 4. Real terrain around the valley map (moves with the story map)
+
+```{python}
+# terrain around the valley map, so the story's background is the real landscape and moves with the map
+import numpy as np, rasterio
+from rasterio.warp import reproject, Resampling
+from rasterio.transform import from_origin
+from matplotlib.colors import to_rgb
+from scipy import ndimage
+from PIL import Image
+
+CELL = 10.0
+X0, X1, Y0, Y1 = 515000, 575000, 5206000, 5246000          # 60 x 40 km around the valley map
+W, H = int((X1 - X0) / CELL), int((Y1 - Y0) / CELL)
+dst_t = from_origin(X0, Y1, CELL, CELL)
+z = np.full((H, W), np.nan, dtype="float32")
+with rasterio.open("data/raw/usgs_ned_13/USGS_13_n48w123.tif") as src:
+    reproject(rasterio.band(src, 1), z, src_nodata=src.nodata, dst_transform=dst_t, dst_crs=26910,
+              dst_nodata=np.nan, resampling=Resampling.bilinear)
+water = ~np.isfinite(z) | (z < 0.5)
+z = np.where(np.isfinite(z), z, 0)
+
+def hillshade(z, azdeg, altdeg, vex=4.0):
+    gy, gx = np.gradient(z * np.float32(vex), np.float32(-CELL), np.float32(CELL))
+    az, alt = np.radians(90 - azdeg), np.radians(altdeg)
+    lx, ly, lz = np.cos(az) * np.cos(alt), np.sin(az) * np.cos(alt), np.sin(alt)
+    hs = (-gx * lx - gy * ly + lz) / np.sqrt(gx * gx + gy * gy + 1)
+    lo, hi = np.nanpercentile(hs[~water], [0.1, 99.9])
+    return np.clip((hs - lo) / (hi - lo), 0, 1).astype("float32")
+
+hs = 0.75 * hillshade(z, 315, 35) + 0.25 * hillshade(z, 225, 50)
+BG, LIFT_C, SEA = np.array(to_rgb("#081b2c")), np.array(to_rgb("#86c1d1")), np.array(to_rgb("#0c2538"))
+rgb = BG * (1 - 0.70 * (1 - hs))[..., None]                                   # same recipe as the map's uplands
+rgb = rgb + (np.clip(hs - 0.55, 0, None) * 0.16)[..., None] * LIFT_C
+sea = ndimage.gaussian_filter(water.astype("float32"), 2)[..., None]          # soft shoreline
+rgb = rgb * (1 - sea) + SEA * sea
+Image.fromarray((np.clip(rgb, 0, 1) * 255).round().astype("uint8")).save("figures/story_skirt.jpg", quality=85, optimize=True, progressive=True)
+
+# where the skirt sits relative to the valley map (541-565 km E, 5210-5238 km N), for story.qmd
+MX0, MX1, MY0, MY1 = 541000, 565000, 5210000, 5238000
+mw, mh = MX1 - MX0, MY1 - MY0
+print(f"top: {-(Y1 - MY1) / mh * 100:.3f}%; right: {-(X1 - MX1) / mw * 100:.3f}%; "
+      f"bottom: {-(MY0 - Y0) / mh * 100:.3f}%; left: {-(MX0 - X0) / mw * 100:.3f}%;")
+```
+
+## 5. Story map with its edges blended into the terrain (keeps the camera moves sharp)
+
+```{python}
+# story map with its edges blended into the surrounding terrain, so the page needs no CSS mask
+# (a masked image can't be drawn at full resolution while it moves, which made the camera moves blocky)
+import numpy as np
+from PIL import Image
+Image.MAX_IMAGE_PIXELS = None
+story = Image.open("figures/valley_story.jpg").convert("RGB")       # 541-565 km E, 5210-5238 km N
+skirt = Image.open("figures/story_skirt.jpg").convert("RGB")       # 515-575 km E, 5206-5246 km N, 10 m pixels
+W, H = story.size
+under = skirt.crop(((541000 - 515000) // 10, (5246000 - 5238000) // 10,
+                    (565000 - 515000) // 10, (5246000 - 5210000) // 10)).resize((W, H), Image.BICUBIC)
+# same fade as the old CSS mask: 0 at the edge, full strength 5% in (sides) and 4% in (top and bottom)
+fx = np.interp(np.minimum(np.arange(W), W - 1 - np.arange(W)) / W, [0, .015, .03, .05], [0, .35, .75, 1])
+fy = np.interp(np.minimum(np.arange(H), H - 1 - np.arange(H)) / H, [0, .012, .025, .04], [0, .35, .75, 1])
+w = (fy[:, None] * fx[None, :])[..., None]
+out = np.asarray(story, dtype="float32") * w + np.asarray(under, dtype="float32") * (1 - w)
+Image.fromarray(out.round().astype("uint8")).save("figures/valley_story_edge.jpg", quality=88, optimize=True, progressive=True)
+```
+
+## 6. Delta fan highlight for the Commencement Bay stop
+
+```{python}
+# delta fan highlight for the story's Commencement Bay stop (sits on the valley map like the change layers)
+import numpy as np, rasterio
+from scipy import ndimage
+from matplotlib.path import Path
+from PIL import Image
+
+with rasterio.open("data/processed/valley_seafloor_3m.tif") as s:
+    z = s.read(1)                                    # same 3 m grid as the valley map
+H, W = z.shape
+sea = np.isfinite(z)
+lab, _ = ndimage.label(sea); size = np.bincount(lab.ravel()); size[0] = 0
+sea = lab == size.argmax()                           # the open bay and its waterways
+
+# the fan as sketched over the map (fractions of the map across, down), trimmed by depth below
+outline = [(.0042,.0761),(.0219,.0651),(.0416,.0482),(.0613,.0347),(.0869,.0263),(.1105,.0162),(.1283,.0094),
+           (.1440,.0145),(.1578,.0280),(.1696,.0449),(.1578,.0432),(.1480,.0449),(.1401,.0533),(.1362,.0601),
+           (.1293,.0601),(.1263,.0668),(.1204,.0803),(.1165,.0938),(.1066,.0989),(.0987,.1040),(.0908,.1023),
+           (.0869,.1107),(.0751,.1209),(.0653,.1259),(.0515,.1141),(.0357,.1006),(.0180,.0871),(.0081,.0786)]
+C0, R0, C1, R1 = 0, 0, 1600, 1400                    # work in the bay corner only
+rr, cc = np.mgrid[R0:R1, C0:C1]
+inside = Path([(u * W, v * H) for u, v in outline]).contains_points(np.c_[cc.ravel(), rr.ravel()]).reshape(rr.shape)
+fan = inside & sea[R0:R1, C0:C1] & (np.nan_to_num(z[R0:R1, C0:C1], nan=-999) > -100)   # delta top and front, above the deep basin
+fan = ndimage.gaussian_filter(fan.astype("float32"), 6) > .5                            # smooth the edge
+
+SAND = np.array([205, 184, 255]) / 255                   # pale violet, so it reads apart from the gold port layer
+soft = ndimage.gaussian_filter(fan.astype("float32"), 3)
+edge = np.clip(ndimage.gaussian_filter((ndimage.binary_dilation(fan, iterations=2) & ~ndimage.binary_erosion(fan, iterations=2)).astype("float32"), 2.5) * 2.2, 0, 1)
+alpha = np.clip(0.16 * soft + 0.9 * edge, 0, 1)
+rgba = np.dstack([np.broadcast_to(SAND, alpha.shape + (3,)), alpha])
+Image.fromarray((rgba * 255).round().astype("uint8"), "RGBA").save("figures/bay_delta.webp", quality=90, method=6)
+print(f"left: 0%; top: 0%; width: {C1 / W * 100:.3f}%; height: {R1 / H * 100:.3f}%;  fan area {fan.sum() * 9 / 1e6:.2f} km2")
+```
+
+## 7. Port of Tacoma today (downloads the outline from Pierce County, draws the port as a raster layer)
+
+```{python}
+# Port of Tacoma today: Pierce County's port industrial area, shown as a raster layer on the valley map
+# (like the Orting change layer: the port's own ground from the 3 m DEM, tinted so it stands apart)
+# downloads the outline once from Pierce County's ArcGIS service, then reuses the saved copy
+from pathlib import Path
+import requests, numpy as np, geopandas as gpd, rasterio
+from rasterio import features
+from rasterio.windows import Window
+from scipy import ndimage
+from PIL import Image
+
+out = Path("data/reach/port_of_tacoma.geojson")
+if not out.exists():
+    url = ("https://services2.arcgis.com/1UvBaQ5y1ubjUPmd/ArcGIS/rest/services/Ports/FeatureServer/0/query"
+           "?where=1%3D1&outFields=*&outSR=4326&f=geojson")
+    r = requests.get(url, timeout=60)
+    r.raise_for_status()
+    out.write_text(r.text)
+port = gpd.read_file(out).to_crs(26910)
+print(f"{len(port)} feature(s), {port.area.sum() / 1e6:.2f} km2, bounds {port.total_bounds.round()}")
+
+# the bay corner of the 3 m valley grid (top left 541 000 E, 5 238 000 N), the same grid as the story map
+C1, R1 = 3000, 2240
+with rasterio.open("data/processed/valley_dem_3m_filled.tif") as s:
+    z = s.read(1, window=Window(0, 0, C1, R1)).astype("float32")
+    tf = s.window_transform(Window(0, 0, C1, R1))
+inside = features.rasterize(((g, 1) for g in port.geometry), out_shape=(R1, C1), transform=tf).astype(bool)
+z = np.where(np.isfinite(z), z, 0)
+
+# texture: hillshade of the port's own ground, so terminals, fill and waterways show through the tint
+gy, gx = np.gradient(z * 8.0, -3.0, 3.0)
+az, alt = np.radians(90 - 315), np.radians(35)
+hs = (-gx * np.cos(az) * np.cos(alt) - gy * np.sin(az) * np.cos(alt) + np.sin(alt)) / np.sqrt(gx**2 + gy**2 + 1)
+lo, hi = np.percentile(hs[inside], [1, 99]); hs = np.clip((hs - lo) / (hi - lo), 0, 1)
+height = np.clip(z / 8.0, 0, 1)                                  # 0 m (water) to 8 m (highest fill)
+DARK, LIGHT = np.array([0.55, 0.33, 0.12]), np.array([1.0, 0.86, 0.60])   # bronze to pale gold
+t = (0.10 + 0.35 * height + 0.55 * hs)[..., None]          # mostly relief, some height
+rgb = DARK + (LIGHT - DARK) * t
+
+water = z < 0.5
+soft = ndimage.gaussian_filter(inside.astype("float32"), 2)
+edge = (ndimage.binary_dilation(inside, iterations=2) & ~ndimage.binary_erosion(inside, iterations=2)).astype("float32")
+alpha = soft * np.where(water, 0.22, 0.58)                        # land tinted, waterways lightly; the map shows through
+alpha = np.clip(alpha + np.clip(ndimage.gaussian_filter(edge, 2) * 2.2, 0, 1) * 0.9, 0, 1)
+rgb = np.where(edge[..., None] > 0, LIGHT, rgb)
+rgba = np.dstack([rgb, alpha])
+Image.fromarray((np.clip(rgba, 0, 1) * 255).round().astype("uint8"), "RGBA").save("figures/port_overlay.webp", quality=88, method=6)
+print("saved figures/port_overlay.webp")
+```
+
+## 8. Orting today (downloads the city limits from Pierce County, draws the town as a raster layer)
+
+```{python}
+# Orting today: the city limits from Pierce County, shown as a raster layer on the valley map
+# (like the port layer: the town's own ground from the 3 m DEM, tinted green so it stands apart)
+# downloads Pierce County's city boundaries once, then reuses the saved copy
+from pathlib import Path
+import requests, numpy as np, geopandas as gpd, rasterio
+from rasterio import features
+from rasterio.windows import Window
+from scipy import ndimage
+from PIL import Image
+
+out = Path("data/reach/pierce_cities.geojson")
+if not out.exists():
+    url = ("https://services2.arcgis.com/1UvBaQ5y1ubjUPmd/ArcGIS/rest/services/Cities_in_Pierce_County/FeatureServer/0/query"
+           "?where=1%3D1&outFields=*&outSR=4326&f=geojson")
+    r = requests.get(url, timeout=60)
+    r.raise_for_status()
+    out.write_text(r.text)
+cities = gpd.read_file(out).to_crs(26910)
+# pick Orting by name, whatever the name column is called
+is_orting = np.zeros(len(cities), bool)
+for c in cities.columns.drop("geometry"):
+    is_orting |= cities[c].astype(str).str.strip().str.lower().eq("orting").to_numpy()
+orting = cities[is_orting]
+if orting.empty:
+    raise SystemExit(f"Orting not found; the columns are {list(cities.columns)}")
+print(f"{len(cities)} cities; Orting: {len(orting)} feature(s), {orting.area.sum() / 1e6:.2f} km2, bounds {orting.total_bounds.round()}")
+
+# a fixed 6.3 x 6.3 km window of the 3 m valley grid around Orting (cols 5450-7550, rows 6100-8200)
+C0, R0, N = 5450, 6100, 2100
+with rasterio.open("data/processed/valley_dem_3m_filled.tif") as s:
+    z = s.read(1, window=Window(C0, R0, N, N)).astype("float32")
+    tf = s.window_transform(Window(C0, R0, N, N))
+    print(f"valley grid {s.width} x {s.height}; layer sits at left {C0 / s.width * 100:.3f}%, top {R0 / s.height * 100:.4f}%, "
+          f"width {N / s.width * 100:.3f}%, height {N / s.height * 100:.4f}%")
+inside = features.rasterize(((g, 1) for g in orting.geometry), out_shape=(N, N), transform=tf).astype(bool)
+edge_px = inside[0].any() or inside[-1].any() or inside[:, 0].any() or inside[:, -1].any()
+if edge_px: print("note: Orting reaches the edge of the window, so a little of it is cut off")
+z = np.where(np.isfinite(z), z, np.nanmedian(z))
+
+# texture: hillshade of the town's own ground (streets, lots, terraces), tinted green
+gy, gx = np.gradient(z * 8.0, -3.0, 3.0)
+az, alt = np.radians(90 - 315), np.radians(35)
+hs = (-gx * np.cos(az) * np.cos(alt) - gy * np.sin(az) * np.cos(alt) + np.sin(alt)) / np.sqrt(gx**2 + gy**2 + 1)
+lo, hi = np.percentile(hs[inside], [1, 99]); hs = np.clip((hs - lo) / (hi - lo), 0, 1)
+DARK, LIGHT = np.array([0.20, 0.42, 0.24]), np.array([0.80, 0.96, 0.70])   # deep green to pale green
+rgb = DARK + (LIGHT - DARK) * (0.25 + 0.75 * hs)[..., None]
+
+soft = ndimage.gaussian_filter(inside.astype("float32"), 2)
+edge = (ndimage.binary_dilation(inside, iterations=2) & ~ndimage.binary_erosion(inside, iterations=2)).astype("float32")
+alpha = soft * 0.55                                                      # the map shows through
+alpha = np.clip(alpha + np.clip(ndimage.gaussian_filter(edge, 2) * 2.2, 0, 1) * 0.9, 0, 1)
+rgb = np.where(edge[..., None] > 0, LIGHT, rgb)
+Image.fromarray((np.clip(np.dstack([rgb, alpha]), 0, 1) * 255).round().astype("uint8"), "RGBA").save(
+    "figures/orting_overlay.webp", quality=88, method=6)
+print("saved figures/orting_overlay.webp")
+```
+
+## 9. Pacific today (downloads the city limits from WSDOT, draws the outline only)
+
+```{python}
+# Pacific today: the city limits as a thin outline only, so the glowing valley floor stays clear
+# Pacific is mostly in King County, so this uses WSDOT's statewide city limits (from the state Office of Financial Management)
+from pathlib import Path
+import requests, numpy as np, geopandas as gpd
+from PIL import Image, ImageDraw, ImageFilter
+
+out = Path("data/reach/pacific_city_limits.geojson")
+if not out.exists():
+    base = "https://data.wsdot.wa.gov/arcgis/rest/services/Shared/CityLimits/MapServer/2/query"
+    r = requests.get(base, params={"where": "CityName = 'Pacific'", "outFields": "*", "outSR": 4326, "f": "geojson"}, timeout=60)
+    r.raise_for_status()
+    out.write_text(r.text)
+pacific = gpd.read_file(out).to_crs(26910)
+if pacific.empty:
+    out.unlink()
+    raise SystemExit("Pacific not found in the download; tell Claude and paste this message")
+print(f"Pacific: {len(pacific)} feature(s), {pacific.area.sum() / 1e6:.2f} km2, bounds {pacific.total_bounds.round()}")
+
+# a fixed 6 x 6 km window of the valley map (cols 4300-6300, rows 0-2000 of the 3 m grid), drawn at 1.5 m per pixel
+# so the line stays crisp when the story zooms in
+X0, Y0, SIZE, PX = 541000 + 4300 * 3, 5238000, 6000, 1.5
+NPX = int(SIZE / PX)                                    # 4000 x 4000 pixels
+minx, miny, maxx, maxy = pacific.total_bounds
+if minx < X0 or maxx > X0 + SIZE or miny < Y0 - SIZE or maxy > Y0:
+    print("note: part of Pacific falls outside the window, so the outline is cut off there")
+def to_px(coords):
+    return [((x - X0) / PX, (Y0 - y) / PX) for x, y in coords]
+rings = []
+for g in pacific.geometry:
+    for poly in getattr(g, "geoms", [g]):
+        rings += [poly.exterior] + list(poly.interiors)
+
+# a dark halo under a light line (like the story's pointer lines), so it shows on bright ground too
+halo = Image.new("L", (NPX, NPX), 0); line = Image.new("L", (NPX, NPX), 0)
+dh, dl = ImageDraw.Draw(halo), ImageDraw.Draw(line)
+for ring in rings:
+    pts = to_px(ring.coords)
+    dh.line(pts, fill=255, width=26, joint="curve")
+    dl.line(pts, fill=255, width=12, joint="curve")
+halo = halo.filter(ImageFilter.GaussianBlur(4)); line = line.filter(ImageFilter.GaussianBlur(1.0))
+h = np.asarray(halo, dtype="float32") / 255 * 0.55
+l = np.asarray(line, dtype="float32") / 255
+alpha = l + h * (1 - l)
+col_line, col_halo = np.array([0.95, 0.98, 0.99]), np.array([0.02, 0.10, 0.16])
+rgb = (col_line * l[..., None] + col_halo * (h * (1 - l))[..., None]) / np.maximum(alpha, 1e-6)[..., None]
+Image.fromarray((np.clip(np.dstack([rgb, alpha]), 0, 1) * 255).round().astype("uint8"), "RGBA").save(
+    "figures/pacific_outline.webp", lossless=False, quality=90, method=6)
+print("saved figures/pacific_outline.webp; it sits at left 53.75%, top 0%, width 25%, height 21.4293% of the valley map")
+```

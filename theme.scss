@@ -1,0 +1,39 @@
+/*-- scss:defaults --*/
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Lora:ital,wght@0,400;0,500;1,400&display=swap');
+
+$body-bg: #081b2c;
+$body-color: #c9dde5;
+$headings-color: #e8f3f6;
+$link-color: #86c1d1;
+$font-family-sans-serif: Inter, "Segoe UI", system-ui, sans-serif;
+$headings-font-family: Lora, Georgia, serif;
+$headings-font-weight: 400;
+$navbar-bg: #081b2c;
+$navbar-fg: #cfe3ea;
+$navbar-hl: #ffffff;
+$border-color: #1d3d55;
+
+/*-- scss:rules --*/
+
+// ---- page transition (ported from agentPritam47/pagetransition-waabi) ----
+// the new page grows out of the center with rounded corners while easing from 1.4x to full size
+@view-transition { navigation: auto; }
+::view-transition-old(root),
+::view-transition-new(root) { animation: none; mix-blend-mode: normal; }
+::view-transition-old(root) { z-index: 1; }
+::view-transition-new(root) {
+  z-index: 2;
+  animation: center-clip-reveal 1.2s cubic-bezier(0.76, 0, 0.24, 1) forwards;
+}
+@keyframes center-clip-reveal {
+  0%   { clip-path: inset(50% 50% 50% 50% round 2vw); transform: scale(1.4); }
+  78%  { clip-path: inset(0% 0% 0% 0% round 2vw);     transform: scale(1); }
+  100% { clip-path: inset(0% 0% 0% 0% round 0);       transform: scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-new(root) { animation: none; }
+}
+
+// ---- text ----------------------------------------------------------------
+.quarto-title .subtitle, figcaption, .figure-caption { color: #9dbfcc; }
+h1, h2, h3 { letter-spacing: 0.01em; }

@@ -1,5 +1,75 @@
 [
   {
+    "objectID": "story.html#height-above-the-river",
+    "href": "story.html#height-above-the-river",
+    "title": "The Puyallup River",
+    "section": "Height Above The River",
+    "text": "Height Above The River\nThis is a relative elevation model. Instead of height above sea level, each spot shows how far it sits above the nearest river. The downstream slope is removed, so the shape of the floodplain stands out.\n\n\n\n\nRiver level10 m or more above"
+  },
+  {
+    "objectID": "story.html#between-two-rivers",
+    "href": "story.html#between-two-rivers",
+    "title": "The Puyallup River",
+    "section": "Between Two Rivers",
+    "text": "Between Two Rivers\nOrting sits between the Puyallup and the braided Carbon, on ground built by mudflows from Mount Rainier. Nearly half of the Orting study area is within 3 m of the river, and the ground southwest of town sits below the leveed Puyallup next to it."
+  },
+  {
+    "objectID": "story.html#rivers-that-keep-moving",
+    "href": "story.html#rivers-that-keep-moving",
+    "title": "The Puyallup River",
+    "section": "Rivers That Keep Moving",
+    "text": "Rivers That Keep Moving\nComparing LiDAR from 2011 and 2020 shows where the ground changed. Coral is erosion, where banks were cut away. Blue is deposition, where new gravel bars built up.\nIn nine years the rivers reworked about 1.1 million m³ of sediment. The Carbon below Orting moved the most."
+  },
+  {
+    "objectID": "story.html#scars-of-old-channels",
+    "href": "story.html#scars-of-old-channels",
+    "title": "The Puyallup River",
+    "section": "Scars Of Old Channels",
+    "text": "Scars Of Old Channels\nBelow Orting the valley widens. Pale curves on the valley floor are old meanders the river left behind, still a little lower than the ground around them."
+  },
+  {
+    "objectID": "story.html#where-the-white-river-joins",
+    "href": "story.html#where-the-white-river-joins",
+    "title": "The Puyallup River",
+    "section": "Where The White River Joins",
+    "text": "Where The White River Joins\nAt Sumner the White River comes in from the north. It hasn’t always: until a flood in 1906 changed its course, most of the White River flowed north toward Seattle."
+  },
+  {
+    "objectID": "story.html#a-valley-level-with-its-river",
+    "href": "story.html#a-valley-level-with-its-river",
+    "title": "The Puyallup River",
+    "section": "A Valley Level With Its River",
+    "text": "A Valley Level With Its River\n\nAround Pacific the whole valley floor glows. Almost all of it sits within a meter or two of the White River, the brightest ground anywhere on the map."
+  },
+  {
+    "objectID": "story.html#a-river-in-a-straight-line",
+    "href": "story.html#a-river-in-a-straight-line",
+    "title": "The Puyallup River",
+    "section": "A River In A Straight Line",
+    "text": "A River In A Straight Line\nDownstream, the Puyallup runs straight between levees. The curving scars across the floor show where it used to wander before it was confined."
+  },
+  {
+    "objectID": "story.html#where-the-sediment-goes",
+    "href": "story.html#where-the-sediment-goes",
+    "title": "The Puyallup River",
+    "section": "Where The Sediment Goes",
+    "text": "Where The Sediment Goes\nAt the mouth, the river’s sediment builds a delta. Much of the old tideflat is now the Port of Tacoma. Offshore, the seafloor shows the delta front dropping into water more than 150 m deep."
+  },
+  {
+    "objectID": "story.html#built-by-the-river",
+    "href": "story.html#built-by-the-river",
+    "title": "The Puyallup River",
+    "section": "Built By The River",
+    "text": "Built By The River\nFrom Orting to the bay, this valley floor is made of sediment the rivers carried down. Wherever the map glows, the ground is still close to river level."
+  },
+  {
+    "objectID": "story.html#how-it-was-made",
+    "href": "story.html#how-it-was-made",
+    "title": "The Puyallup River",
+    "section": "How It Was Made",
+    "text": "How It Was Made\n\n\nLand\nUSGS 3DEP 1 m lidar DEMs (Pierce County 2020, King County 2021), resampled to 3 m. Small gaps were filled from the USGS 10 m DEM.\n\n\nSeafloor\nNOAA NCEI CUDEM topobathy, about 3 m, shows the delta front under Commencement Bay.\n\n\nRivers\nUSGS National Hydrography Dataset centerlines for the Puyallup, White and Carbon rivers.\n\n\nRelative Elevation\nThe water surface was sampled every 25 m along each river, interpolated across the valley (IDW), smoothed, and subtracted from the DEM, following Daniel Coe’s method.\n\n\nChange, 2011 To 2020\nPierce County lidar from 2011 and 2020, differenced. A 0.19 m offset measured on stable ground was removed, and change under 0.23 m (the level of detection) was left out.\n\n\nMap And Story\nPython with rasterio, NumPy and matplotlib. Scrollytelling with the Closeread extension for Quarto.\n\n\nDownload the full 4K poster"
+  },
+  {
     "objectID": "index.html",
     "href": "index.html",
     "title": "Floodplain Height and Channel Erosion of the Puyallup River",

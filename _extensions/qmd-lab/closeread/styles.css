@@ -1,0 +1,11 @@
+/* ---- terrain background on every page ----
+   a crop of the map's own plateau, under a dark wash so text stays readable */
+html { background: #081b2c; }
+body {
+  background:
+    linear-gradient(rgba(8, 27, 44, 0.35), rgba(8, 27, 44, 0.35)),
+    url("figures/bg_terrain.jpg") center / cover fixed,
+    #081b2c;
+}
+.navbar { background: rgba(8, 27, 44, 0.80) !important; backdrop-filter: blur(6px);
+          border-bottom: 1px solid rgba(134, 193, 209, 0.15); }          

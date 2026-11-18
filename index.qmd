@@ -25,8 +25,8 @@ Orting sits between two rivers carrying heavy sediment loads from Mount Rainier.
 ![Elevation change, 2011 to 2020. Red is erosion, blue is deposition.](figures/change_map.png)
 
 ::: {style="font-size: 1.2em;"}
-- [**Blue**]{style="color: #2166ac;"} = **Deposition:** places that got higher, like new gravel bars on the inside of bends or sediment settling in the channel.
-- [**Red**]{style="color: #b2182b;"} = **Erosion:** places that got lower, like banks cut back on the outside of bends.
+- [**Blue**]{style="color: #5cc8f0;"} = **Deposition:** places that got higher, like new gravel bars on the inside of bends or sediment settling in the channel.
+- [**Red**]{style="color: #ff6b5b;"} = **Erosion:** places that got lower, like banks cut back on the outside of bends.
 
 <div style="height: 4em;"></div>
 

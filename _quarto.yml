@@ -3,17 +3,35 @@ project:
   output-dir: docs
   render:
     - index.qmd
+    - story.qmd
+  resources:
+    - figures/valley_rem_4k.png
+    - figures/bg_terrain.jpg
+    - figures/story_skirt.jpg
+    - figures/orting_change_wash.webp
+    - figures/orting_change_lines.webp
+    - figures/valley_story.jpg
+    - figures/valley_story_edge.jpg
+    - figures/bay_delta.webp
+    - figures/port_overlay.webp
+    - figures/orting_overlay.webp
+    - figures/pacific_outline.webp
 
 website:
   title: "Puyallup River LiDAR"
   navbar:
+    background: "#081b2c"
+    foreground: "#cfe3ea"
     left:
+      - href: story.qmd
+        text: The Story
       - href: index.qmd
-        text: Home
+        text: Orting Study
 
 format:
   html:
-    theme: cosmo
+    theme: [cosmo, theme.scss]
+    css: styles.css
     toc: true
     fontsize: 1.25em
     grid:
