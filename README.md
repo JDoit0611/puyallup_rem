@@ -10,7 +10,7 @@ The map is a **relative elevation model (REM)**. Instead of showing height above
 
 ## What's in the story
 
-The site is a scrolling map story built with [Quarto](https://quarto.org) and [Closeread](https://closeread.dev). The camera flies down the valley one stop at a time:
+The site is an interactive and scrollable story map built with [Quarto](https://quarto.org) and [Closeread](https://closeread.dev). The camera flies down the valley one stop at a time:
 
 | Stop | What you see |
 |---|---|
@@ -70,7 +70,7 @@ The raw and processed rasters total several gigabytes, so they aren't stored in 
 quarto render
 ```
 
-This builds the site into `docs/`, which GitHub Pages serves. To rebuild the figures, run notebooks 01–08 in order first.
+This builds the site into `docs/`, which GitHub Pages serves. To rebuild the figures, run notebooks 1–8 in order first.
 
 ---
 
